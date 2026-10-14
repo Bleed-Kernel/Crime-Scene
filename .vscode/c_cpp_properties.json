@@ -1,0 +1,57 @@
+{
+    "configurations": [
+        {
+            "name": "Mac",
+            "compilerPath": "x86_64-elf-gcc",
+            "compilerArgs": [
+                "-ffreestanding",
+                "-nostdinc",
+                "-m64"
+            ],
+            "includePath": [
+                "${workspaceFolder}/src",
+                "${workspaceFolder}/include",
+                "${workspaceFolder}/sysroot/include",
+                "${workspaceFolder}/sysroot/include/bleed"
+            ],
+            "browse": {
+                "path": [
+                    "${workspaceFolder}/src",
+                    "${workspaceFolder}/lib",
+                    "${workspaceFolder}/include",
+                    "${workspaceFolder}/sysroot/include"
+                ],
+                "limitSymbolsToIncludedHeaders": true
+            },
+            "cStandard": "gnu17",
+            "intelliSenseMode": "linux-gcc-x64"
+        },
+        {
+            "name": "Linux",
+            "compilerPath": "gcc",
+            "compilerArgs": [
+                "-ffreestanding",
+                "-nostdinc",
+                "-m64"
+            ],
+            "includePath": [
+                "${workspaceFolder}/src",
+                "${workspaceFolder}/include",
+                "${workspaceFolder}/sysroot/include",
+                "${workspaceFolder}/sysroot/include/bleed"
+            ],
+            "browse": {
+                "path": [
+                    "${workspaceFolder}/src",
+                    "${workspaceFolder}/lib",
+                    "${workspaceFolder}/include",
+                    "${workspaceFolder}/sysroot/include"
+                ],
+                "limitSymbolsToIncludedHeaders": true
+            },
+            "cStandard": "gnu17",
+            "intelliSenseMode": "linux-gcc-x64"
+        }
+    ],
+    "version": 4
+}
