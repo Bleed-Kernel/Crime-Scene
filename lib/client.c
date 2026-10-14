@@ -4,7 +4,6 @@
 #include <fcntl.h>
 #include <syscalls.h>
 #include <crime/crime.h>
-#include <crime/sys.h>
 
 #define WINDOW_MAX 16
 #define QUEUE_MAX  32

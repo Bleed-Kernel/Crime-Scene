@@ -3,7 +3,7 @@
 #include <server.h>
 #include <taskbar.h>
 #include <clock.h>
-#include <crime/protocol.h>
+#include <crime/crime.h>
 
 static uint8_t   buttons_last;
 

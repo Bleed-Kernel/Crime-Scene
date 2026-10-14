@@ -1,7 +1,7 @@
 #include <string.h>
 #include <syscalls.h>
 #include <ipc.h>
-#include <crime/sys.h>
+#include <crime/crime.h>
 
 #define SYS_POLL        7
 #define SYS_SHM_CREATE  522

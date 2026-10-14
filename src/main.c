@@ -17,7 +17,6 @@
 #include <fcntl.h>
 #include <syscalls.h>
 #include <scheduler.h>
-#include <crime/sys.h>
 
 // nothing reaches the screen more often than this
 #define FRAME_FS (1000 * FS_PER_MS / 120)

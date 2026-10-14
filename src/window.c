@@ -6,7 +6,7 @@
 #include <theme.h>
 #include <taskbar.h>
 #include <wallpaper.h>
-#include <crime/sys.h>
+#include <crime/crime.h>
 
 #define SHADOW_REACH        11
 #define SHADOW_DROP         3           // the shadow sits a little below the window

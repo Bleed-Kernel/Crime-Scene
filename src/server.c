@@ -8,7 +8,7 @@
 #include <server.h>
 #include <wm.h>
 #include <term.h>
-#include <crime/sys.h>
+#include <crime/crime.h>
 
 int server_init(void) {
     char buf[24];

@@ -1,7 +1,7 @@
 #pragma once
 #include <display.h>
 #include <window.h>
-#include <crime/protocol.h>
+#include <crime/crime.h>
 
 int  server_init(void);
 void server_shutdown(display_t *d);

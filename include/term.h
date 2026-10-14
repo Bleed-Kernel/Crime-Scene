@@ -1,7 +1,7 @@
 #pragma once
 #include <display.h>
 #include <window.h>
-#include <crime/sys.h>
+#include <crime/crime.h>
 
 // a new terminal with a shell in it, started in cwd if thats not NULL or empty. 0 if it worked
 int  term_open(display_t *d, const char *cwd);

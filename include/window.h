@@ -1,7 +1,7 @@
 #pragma once
 #include <stdint.h>
 #include <display.h>
-#include <crime/protocol.h>
+#include <crime/crime.h>
 
 // how far the outside of the window is from the content
 #define WINDOW_FRAME     4      // the raised edge and the grey inside it

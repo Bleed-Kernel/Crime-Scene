@@ -10,7 +10,6 @@
 #include <keyboard.h>
 #include <console.h>
 #include <crime/crime.h>
-#include <crime/sys.h>
 #include <display.h>
 #include <term.h>
 #include <wm.h>
