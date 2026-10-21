@@ -18,6 +18,9 @@ typedef struct {
 
     int ascent;
     int descent;
+    int x_height;
+    int cap_height;
+    int stem;
 } ttf_t;
 
 // 0 if data is a font this can draw. data has to stay around as long as t does
@@ -29,6 +32,5 @@ int ttf_glyph(const ttf_t *t, uint32_t codepoint);
 // how far the pen moves after a glyph, in font units
 int ttf_advance(const ttf_t *t, int glyph);
 
-// draw a glyph at scale pixels to the font unit. gives back w * h bytes of coverage for the
-// caller to free, NULL for a glyph with nothing in it or if it went wrong.
+// w * h bytes of hinted coverage for the caller to free, NULL if its empty or broken
 uint8_t *ttf_render(const ttf_t *t, int glyph, float scale, int *w, int *h, int *left, int *top);

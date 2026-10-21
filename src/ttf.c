@@ -4,6 +4,11 @@
 
 #define COMPOSITE_DEPTH 8       // glyphs made of glyphs made of glyphs, this is where it stops
 #define GLYPH_PX_MAX    512     // nothing is drawn bigger than this either way
+#define EDGES_MAX       64      // per axis, past that a glyph is drawn as it is
+#define STEM_MAX        0.2f    // of an em, anything thicker is two edges not a stem
+#define OVERSHOOT       0.025f  // of an em, how far a round top or bottom goes past the flat ones
+#define CONTRAST        1.8f    // how hard partly covered pixels are pushed to empty or full
+#define CONTRAST_PX_MAX 20      // an em bigger than this has pixels enough to show its edges as they are
 
 // composite glyph flags
 #define ARGS_ARE_WORDS  0x0001
@@ -61,6 +66,9 @@ static void cmap_pick(ttf_t *t, uint32_t cmap) {
     }
 }
 
+static uint32_t glyph_at(const ttf_t *t, int glyph);
+static int      stem_measure(const ttf_t *t);
+
 int ttf_open(ttf_t *t, const uint8_t *data, size_t size) {
     memset(t, 0, sizeof(*t));
     t->data = data;
@@ -91,6 +99,12 @@ int ttf_open(ttf_t *t, const uint8_t *data, size_t size) {
     cmap_pick(t, cmap);
     if (!t->units || !t->glyphs || !t->hmetrics || !t->cmap_format)
         return -1;
+
+    uint32_t x = glyph_at(t, ttf_glyph(t, 'x'));
+    uint32_t h = glyph_at(t, ttf_glyph(t, 'H'));
+    t->x_height   = x ? rds16(t, x + 8) : 0;
+    t->cap_height = h ? rds16(t, h + 8) : 0;
+    t->stem     = stem_measure(t);
     return 0;
 }
 
@@ -333,6 +347,167 @@ static int outline_glyph(const ttf_t *t, int glyph, const float m[6], outline_t 
     return 0;
 }
 
+typedef struct {
+    float at, to;
+    int   side;
+    int   zoned;
+} edge_t;
+
+// baseline, x height and cap height
+typedef struct {
+    float at[3];
+    int   count;
+    float reach;
+} zones_t;
+
+static float rnd(float v) {
+    return (float)(int)(v < 0 ? v - 0.5f : v + 0.5f);
+}
+
+static float coord(const point_t *p, int axis) {
+    return axis ? p->y : p->x;
+}
+
+// which way round the outlines go, by the sign of their area
+static int clockwise(const outline_t *o) {
+    float area = 0;
+    for (int i = 0, start = 0; i < o->count; i++) {
+        const point_t *p = &o->points[i];
+        const point_t *q = p->last ? &o->points[start] : p + 1;
+        if (p->last)
+            start = i + 1;
+        area += p->x * q->y - q->x * p->y;
+    }
+    return area < 0;
+}
+
+// every flat edge across axis, in order along it
+static int edges_find(const outline_t *o, int axis, int cw, edge_t *edges) {
+    int count = 0;
+
+    for (int i = 0, start = 0; i < o->count; i++) {
+        const point_t *p = &o->points[i];
+        const point_t *q = p->last ? &o->points[start] : p + 1;
+        if (p->last)
+            start = i + 1;
+
+        float d     = coord(q, axis) - coord(p, axis);
+        float along = coord(q, !axis) - coord(p, !axis);
+        if (d > 0.01f || d < -0.01f || along == 0)
+            continue;
+        int side = (along > 0) == cw ? -1 : 1;
+        if (!axis)
+            side = -side;
+
+        float at  = coord(p, axis);
+        int   dup = 0;
+        for (int e = 0; e < count && !dup; e++)
+            dup = edges[e].side == side && edges[e].at - at < 0.05f && at - edges[e].at < 0.05f;
+        if (!dup && count < EDGES_MAX)
+            edges[count++] = (edge_t){ .at = at, .side = side };
+    }
+
+    for (int i = 1; i < count; i++) {
+        edge_t e = edges[i];
+        int    j = i - 1;
+        for (; j >= 0 && edges[j].at > e.at; j--)
+            edges[j + 1] = edges[j];
+        edges[j + 1] = e;
+    }
+    return count;
+}
+
+// stem is how thick the fonts usual stem is in pixels
+static void hint_axis(outline_t *o, int axis, int cw, float stem_max, float stem, const zones_t *zones) {
+    edge_t edges[EDGES_MAX];
+    int    count = edges_find(o, axis, cw, edges);
+    if (!count)
+        return;
+
+    for (int i = 0; i < count; i++) {
+        edges[i].to = rnd(edges[i].at);
+        for (int z = 0; zones && z < zones->count; z++) {
+            float d = edges[i].at - zones->at[z];
+            if (d <= zones->reach && d >= -zones->reach) {
+                edges[i].to    = rnd(zones->at[z]);
+                edges[i].zoned = 1;
+            }
+        }
+    }
+
+    for (int i = 0; i + 1 < count; i++) {
+        edge_t *a = &edges[i];
+        edge_t *b = &edges[i + 1];
+        float   w = b->at - a->at;
+        if (a->side != 1 || b->side != -1 || w > stem_max)
+            continue;
+
+        // a usual stem about halfway between two widths keeps its own
+        float thick = rnd(w);
+        if (stem > 0 && w > stem * 0.75f && w < stem * 1.33f) {
+            float frac = stem - (float)(int)stem;
+            thick = frac > 0.3f && frac < 0.7f ? stem : rnd(stem);
+        }
+        if (thick < 1)
+            thick = 1;
+        if (a->zoned && b->zoned) {
+            // both on their heights already
+        } else if (b->zoned) {
+            a->to = b->to - thick;
+        } else {
+            if (!a->zoned)
+                a->to = rnd(a->at + (w - thick) * 0.5f);
+            b->to = a->to + thick;
+        }
+        i++;
+    }
+    for (int i = 1; i < count; i++) {
+        if (edges[i].to < edges[i - 1].to)
+            edges[i].to = edges[i - 1].to;
+    }
+
+    // between two edges a point keeps its place in proportion, past the ends it moves with the end
+    for (int i = 0; i < o->count; i++) {
+        float v = coord(&o->points[i], axis);
+        int   k = 0;
+        while (k < count && edges[k].at <= v)
+            k++;
+
+        if (k == 0)
+            v += edges[0].to - edges[0].at;
+        else if (k == count)
+            v += edges[count - 1].to - edges[count - 1].at;
+        else {
+            edge_t *a = &edges[k - 1];
+            edge_t *b = &edges[k];
+            v = b->at - a->at > 0.001f ? a->to + (v - a->at) * (b->to - a->to) / (b->at - a->at) : a->to;
+        }
+
+        if (axis)
+            o->points[i].y = v;
+        else
+            o->points[i].x = v;
+    }
+}
+
+// the first upright stem of the n, in font units. 0 if theres no n or it has no stem
+static int stem_measure(const ttf_t *t) {
+    outline_t o    = {0};
+    float     m[6] = { 1, 0, 0, 1, 0, 0 };
+    int       stem = 0;
+
+    if (outline_glyph(t, ttf_glyph(t, 'n'), m, &o, 0) == 0 && o.count) {
+        edge_t edges[EDGES_MAX];
+        int    count = edges_find(&o, 0, clockwise(&o), edges);
+        for (int i = 0; i + 1 < count && !stem; i++) {
+            if (edges[i].side == 1 && edges[i + 1].side == -1)
+                stem = (int)(edges[i + 1].at - edges[i].at);
+        }
+    }
+    free(o.points);
+    return stem;
+}
+
 // coverage is built up as how much each edge adds to the pixels right of it, then summed
 // along the rows. its exact for straight edges, no supersampling
 typedef struct {
@@ -380,6 +555,11 @@ static void line(raster_t *r, float x0, float y0, float x1, float y1) {
         float  dy    = low - top;
         float  xnext = x + dxdy * dy;
         float  d     = dy * dir;
+
+        // hinted edges sit right on the bitmaps sides, rounding mustnt step off them
+        float edge = (float)(r->w - 1);
+        x     = x < 0 ? 0 : x > edge ? edge : x;
+        xnext = xnext < 0 ? 0 : xnext > edge ? edge : xnext;
 
         float xa  = x < xnext ? x : xnext;
         float xb  = x < xnext ? xnext : x;
@@ -506,14 +686,28 @@ static void contour(raster_t *r, const point_t *p, int n) {
 }
 
 uint8_t *ttf_render(const ttf_t *t, int glyph, float scale, int *w, int *h, int *left, int *top) {
+    // the x height is made a whole number of pixels, so every lowercase letter can sit on it
+    float sy = scale;
+    if (t->x_height > 0 && rnd((float)t->x_height * scale) >= 1)
+        sy = rnd((float)t->x_height * scale) / (float)t->x_height;
+
     outline_t o = {0};
-    float     m[6] = { scale, 0, 0, scale, 0, 0 };
+    float     m[6] = { scale, 0, 0, sy, 0, 0 };
 
     *w = *h = *left = *top = 0;
     if (outline_glyph(t, glyph, m, &o, 0) < 0 || !o.count) {
         free(o.points);
         return NULL;
     }
+    zones_t zones = { .at = { 0 }, .count = 1, .reach = OVERSHOOT * (float)t->units * sy };
+    if (t->x_height > 0)
+        zones.at[zones.count++] = (float)t->x_height * sy;
+    if (t->cap_height > 0)
+        zones.at[zones.count++] = (float)t->cap_height * sy;
+
+    int cw = clockwise(&o);
+    hint_axis(&o, 0, cw, STEM_MAX * (float)t->units * scale, (float)t->stem * scale, NULL);
+    hint_axis(&o, 1, cw, STEM_MAX * (float)t->units * sy, 0, &zones);
 
     float xmin = o.points[0].x, xmax = xmin;
     float ymin = o.points[0].y, ymax = ymin;
@@ -557,12 +751,19 @@ uint8_t *ttf_render(const ttf_t *t, int glyph, float scale, int *w, int *h, int 
         start = i + 1;
     }
 
+    // pushing big text about leaves its curves stepped with odd pixels stuck out of them
+    float contrast = (float)t->units * scale <= CONTRAST_PX_MAX ? CONTRAST : 1.0f;
     for (int y = 0; y < gh; y++) {
         float sum = 0;
         for (int x = 0; x < gw; x++) {
             sum += r.acc[y * r.w + x];
             float v = sum < 0 ? -sum : sum;
-            out[y * gw + x] = (uint8_t)(v >= 1.0f ? 255 : (int)(v * 255.0f + 0.5f));
+
+            // soft edges read as blur at this size, so theyre made harder makes this text look more readable because
+            // its usually pretty bad
+            v = (v > 1.0f ? 1.0f : v) - 0.5f;
+            v = v * contrast + 0.5f;
+            out[y * gw + x] = (uint8_t)(v <= 0 ? 0 : v >= 1.0f ? 255 : (int)(v * 255.0f + 0.5f));
         }
     }
 

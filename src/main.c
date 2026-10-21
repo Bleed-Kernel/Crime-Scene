@@ -9,6 +9,11 @@
 #include <server.h>
 #include <term.h>
 #include <taskbar.h>
+#include <dialog.h>
+#include <anim.h>
+#include <desktop.h>
+#include <overview.h>
+#include <notify.h>
 #include <wallpaper.h>
 #include <stdlib.h>
 #include <string.h>
@@ -37,6 +42,12 @@
 // the windows keys, left and right. both keyboard drivers hand them over as these
 #define KEY_META_L    0x5B
 #define KEY_META_R    0x5C
+#define KEY_R         0x13
+#define KEY_ESCAPE    0x01
+#define KEY_UP        0x48
+#define KEY_DOWN_ARR  0x50
+#define KEY_LEFT      0x4B
+#define KEY_RIGHT     0x4D
 
 static display_t display;
 static cursor_t  cursor;
@@ -45,24 +56,35 @@ static cursor_shape_t cursor_shape_shown;
 static int            cursor_hidden_shown;
 
 static int            meta_down;
+static int            meta_used;    // another key went with it, so letting go of it isnt the start menu
 static int            ctrl_down;
+
+// theres no pointer while a window has it locked
+static int cursor_hidden(void) {
+    return wm_locked();
+}
 
 static int cursor_changed(void) {
     rect_t now = cursor_rect(&cursor);
     return now.x != cursor_shown.x || now.y != cursor_shown.y || cursor.shape != cursor_shape_shown ||
-           wm_locked() != cursor_hidden_shown;
+           cursor_hidden() != cursor_hidden_shown;
 }
 
 // redraw everything thats damaged from the bottom up, then put it all on screen in one go
 static void frame(void) {
     wm_frame(&display);
 
+    anim_frame(&display);
+    overview_frame(&display);
+    notify_frame(&display);
+    taskbar_frame(&display);
+
     if (cursor_changed()) {
         display_damage(&display, cursor_shown);
         display_damage(&display, cursor_rect(&cursor));
         cursor_shown        = cursor_rect(&cursor);
         cursor_shape_shown  = cursor.shape;
-        cursor_hidden_shown = wm_locked();
+        cursor_hidden_shown = cursor_hidden();
     }
 
     // the taskbar is solid and on top, so windows only get drawn in whats above it
@@ -72,7 +94,12 @@ static void frame(void) {
 
     for (int i = 0; i < display.damage_count; i++) {
         windows_compose(&display, rect_clip(display.damage[i], work));
+        wm_draw(&display, rect_clip(display.damage[i], work));
         taskbar_draw(&display, display.damage[i]);
+        anim_draw(&display, display.damage[i]);
+        dialog_draw(&display, display.damage[i]);
+        overview_draw(&display, display.damage[i]);
+        notify_draw(&display, display.damage[i]);
         if (!cursor_hidden_shown)
             cursor_draw(&cursor, &display, display.damage[i]);
     }
@@ -101,14 +128,23 @@ static int input(int mouse) {
     keyboard_event_t kev;
 
     while (mouse_next(mouse, &mev)) {
+        if (overview_up()) {
+            cursor_move(&cursor, &display, mev.dx, mev.dy);
+            overview_mouse(&display, cursor.x, cursor.y, mev.buttons);
+            continue;
+        }
         if (wm_locked()) {
             wm_mouse_relative(&display, mev.dx, mev.dy, mev.buttons);
+            if (mev.wheel)
+                wm_wheel(&display, cursor.x, cursor.y, mev.wheel);
             continue;
         }
         cursor_move(&cursor, &display, mev.dx, mev.dy);
         wm_mouse(&display, cursor.x, cursor.y, ctrl_click(mev.buttons));
+        if (mev.wheel)
+            wm_wheel(&display, cursor.x, cursor.y, mev.wheel);
     }
-    cursor.shape = wm_cursor();
+    cursor.shape = overview_up() ? CURSOR_ARROW : wm_cursor();
 
     while (keyboard_next(0, &kev)) {
         ctrl_down = kev.keymod & KEYMOD_CTRL;
@@ -118,17 +154,47 @@ static int input(int mouse) {
             (kev.keymod & KEYMOD_CTRL) && (kev.keymod & KEYMOD_ALT))
             return 1;
 
+        if (kev.keycode == KEY_META_L || kev.keycode == KEY_META_R) {
+            if (kev.action == KEY_DOWN && !meta_down)
+                meta_used = 0;
+            if (kev.action != KEY_DOWN && meta_down && !meta_used && !dialog_up() && !overview_up())
+                taskbar_menu_toggle(&display);
+            meta_down = (kev.action == KEY_DOWN);
+            continue;
+        }
+        if (meta_down && kev.action == KEY_DOWN) {
+            meta_used = 1;
+            if (kev.keycode == KEY_R)
+                dialog_run(&display);
+            if (kev.keycode == KEY_TAB) {
+                taskbar_menus_close(&display);
+                overview_open(&display);
+            }
+            if (kev.keycode == KEY_LEFT)     wm_tile(&display, WM_TILE_LEFT);
+            if (kev.keycode == KEY_RIGHT)    wm_tile(&display, WM_TILE_RIGHT);
+            if (kev.keycode == KEY_UP)       wm_tile(&display, WM_TILE_UP);
+            if (kev.keycode == KEY_DOWN_ARR) wm_tile(&display, WM_TILE_DOWN);
+            continue;
+        }
+
+        if (overview_up()) {
+            overview_key(&display, &kev);
+            continue;
+        }
+
+        if (dialog_key(&display, &kev))
+            continue;
+
+        if (kev.keycode == KEY_ESCAPE && taskbar_menus_up()) {
+            if (kev.action == KEY_DOWN)
+                taskbar_menus_close(&display);
+            continue;
+        }
+
         // alt tab is ours too. its the way out of a window thats holding the pointer
         if (kev.keycode == KEY_TAB && (kev.keymod & KEYMOD_ALT)) {
             if (kev.action == KEY_DOWN)
                 wm_switch(&display);
-            continue;
-        }
-        // the windows key is the start menu. once per press, a held key repeats
-        if (kev.keycode == KEY_META_L || kev.keycode == KEY_META_R) {
-            if (kev.action == KEY_DOWN && !meta_down)
-                taskbar_menu_toggle(&display);
-            meta_down = (kev.action == KEY_DOWN);
             continue;
         }
         wm_key(&display, &kev);
@@ -188,6 +254,7 @@ int main(void) {
     }
 
     wallpaper_init(&display);
+    desktop_init(&display);
     taskbar_update(&display);
 
     cursor.x = display.width / 2;
@@ -212,6 +279,23 @@ int main(void) {
 
     for (;;) {
         int timeout = SWEEP_MS;
+
+        taskbar_tick(&display);
+        int tip_wait = taskbar_wait_ms();
+        if (tip_wait >= 0 && tip_wait < timeout)
+            timeout = tip_wait;
+
+        window_focus_hold(&display, overview_up());
+        server_focus(&display);
+
+        anim_tick(&display);
+        overview_tick(&display);
+        notify_tick(&display);
+        int waits[] = { anim_wait_ms(), overview_wait_ms(), notify_wait_ms() };
+        for (int i = 0; i < 3; i++) {
+            if (waits[i] >= 0 && waits[i] < timeout)
+                timeout = waits[i];
+        }
 
         if (display.damage_count || cursor_changed()) {
             uint64_t now   = clock_now();

@@ -8,6 +8,7 @@
 #include <server.h>
 #include <wm.h>
 #include <term.h>
+#include <notify.h>
 #include <crime/crime.h>
 
 int server_init(void) {
@@ -51,13 +52,19 @@ static int client_alive(uint64_t pid) {
     return info.state != TASK_ZOMBIE && info.state != TASK_DEAD && info.state != TASK_FREE;
 }
 
+// a client that goes with its windows still open didnt close them itself, it crashed or was killed?
 void server_sweep(display_t *d) {
     for (int i = 0; window_index(i); ) {
         uint64_t pid = window_index(i)->owner;
-        if (client_alive(pid))
+        if (client_alive(pid)) {
             i++;
-        else
-            client_drop(d, pid);
+            continue;
+        }
+
+        char text[96];
+        snprintf(text, sizeof(text), "%.60s stopped without closing.", window_index(i)->title);
+        client_drop(d, pid);
+        notify_post(d, "Program ended", text);
     }
 }
 
@@ -86,18 +93,37 @@ void server_maximise(display_t *d, window_t *win) {
     if (win->maximised) {
         to = win->restore;
     } else {
-        win->restore = window_content(win);
+        // a snapped window already has where it came from kept, thats where it goes back to
+        if (!win->snapped)
+            win->restore = window_content(win);
         to = window_maximised_rect(d);
     }
+    win->snapped = 0;
 
     win->maximised = !win->maximised;
     server_resize(d, win, to.x, to.y, to.w, to.h);
 }
 
+void server_kill(display_t *d, window_t *win) {
+    if (win->term) {
+        term_kill(d, win);
+        return;
+    }
+
+    // the desktop doesnt kill itself
+    uint64_t pid = win->owner;
+    if (pid == (uint64_t)_getpid())
+        return;
+
+    _kill((long)pid, SIGKILL);
+    client_drop(d, pid);
+    client_alive(pid);
+}
+
 static uint32_t focus_told;     // the window that was last told it has the focus
 
 void server_focus(display_t *d) {
-    window_t *top = window_top();
+    window_t *top = window_focused();
     uint32_t  now = top ? top->id : 0;
     if (now == focus_told)
         return;

@@ -32,6 +32,7 @@ enum {
     CS_EV_RESIZE,           // w, h, pitch, shm, serial. shm is often the same buffer as before
     CS_EV_FOCUS,            // focused says whether it just got the focus or just lost it
     CS_EV_MOUSE_RELATIVE,   // x y are how far the mouse moved, buttons. only while the pointer is locked
+    CS_EV_WHEEL,            // x y inside the window, wheel is how many notches. away from you is positive
 };
 
 // every message is one of these in a page of its own
@@ -49,6 +50,7 @@ typedef struct {
     uint8_t  keymod;
     uint64_t shm;
     char     title[CS_TITLE_MAX];
+    int32_t  wheel;
 } cs_msg_t;
 
 // windows
@@ -96,6 +98,16 @@ void cs_pointer_lock(cs_window_t *win, int on);
 // 1 with an event in ev, 0 if timeout_ms ran out first. negative waits forever.
 int cs_event_wait(cs_event_t *ev, int timeout_ms);
 
+// resources
+
+// icons are elf sections with a png in each
+#define CS_RES_ICON16   ".bleed.icon16"
+#define CS_RES_ICON32   ".bleed.icon32"
+#define CS_RES_ICON48   ".bleed.icon48"
+
+#define CS_RES_APP      ".bleed.app"
+uint8_t *cs_res_read(const char *path, const char *name, size_t *size);
+
 // syscalls
 
 #define CS_PAGE_SIZE 4096UL
@@ -120,6 +132,9 @@ long poll(struct pollfd *fds, unsigned long nfds, int timeout_ms);
 long shm_create(unsigned long pages);
 long shm_map(unsigned long id, size_t *pages_out);
 long shm_destroy(unsigned long id);
+
+// the absolute path of the file pid was started from
+long task_path(uint64_t pid, char *buf, unsigned long size);
 
 int cs_msg_send(uint64_t pid, const cs_msg_t *msg);
 int cs_msg_recv(cs_msg_t *msg, uint64_t *sender);

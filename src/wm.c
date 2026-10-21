@@ -2,7 +2,11 @@
 #include <wm.h>
 #include <server.h>
 #include <taskbar.h>
+#include <dialog.h>
+#include <desktop.h>
+#include <notify.h>
 #include <clock.h>
+#include <theme.h>
 #include <crime/crime.h>
 
 static uint8_t   buttons_last;
@@ -10,6 +14,25 @@ static uint8_t   buttons_last;
 static window_t *dragging;      // being moved by its title bar
 static int       drag_dx;
 static int       drag_dy;
+static int       drag_from_x;   // where it went down, a maximised or snapped one comes loose once it moves
+static int       drag_from_y;
+static int       drag_loose;
+
+#define SNAP_NONE    0
+#define SNAP_MAX     1          // the top of the screen
+#define SNAP_LEFT    2
+#define SNAP_RIGHT   3
+#define SNAP_TL      4          // the quarters, from the corners
+#define SNAP_TR      5
+#define SNAP_BL      6
+#define SNAP_BR      7
+#define SNAP_CORNER  64         // this close to a corner along an edge and its the quarter
+#define SNAP_LOOSEN  6          // how far a snapped window has to be dragged before it comes away
+#define SNAP_EDGE    3          // the outline round where it would go
+
+static int       snap_zone;     // where the window being dragged would go if it was let go now
+
+
 
 static window_t *pressing;      // a title bar button went down on this one
 static int       press_which;   // and which button it was
@@ -218,10 +241,10 @@ void wm_tick(display_t *d) {
     // a lock only holds while its window wants it and has the focus
     if (locked && !locked->wants_lock)
         lock_release(0);
-    if (locked && window_top() != locked)
+    if (locked && window_focused() != locked)
         lock_release(1);
 
-    window_t *top = window_top();
+    window_t *top = window_focused();
     if (!locked && top && top->wants_lock && !top->lock_broken && !dragging && !resizing && !pressing) {
         locked      = top;
         locked_dx   = 0;
@@ -287,6 +310,162 @@ static void button_hover(display_t *d, int x, int y) {
     hovered = win;
 }
 
+// the content rect for a window filling zone
+static rect_t snap_rect(const display_t *d, int zone) {
+    if (zone == SNAP_MAX)
+        return window_maximised_rect(d);
+
+    int    half   = d->width / 2;
+    int    work_h = d->height - TASKBAR_H;
+    int    left   = zone == SNAP_LEFT || zone == SNAP_TL || zone == SNAP_BL;
+    rect_t frame  = { left ? 0 : half, 0, left ? half : d->width - half, work_h };
+    if (zone == SNAP_TL || zone == SNAP_TR)
+        frame.h = work_h / 2;
+    if (zone == SNAP_BL || zone == SNAP_BR) {
+        frame.y = work_h / 2;
+        frame.h = work_h - work_h / 2;
+    }
+    return (rect_t){ frame.x + WINDOW_INSET, frame.y + WINDOW_INSET_TOP, frame.w - WINDOW_INSET * 2,
+                     frame.h - WINDOW_INSET_TOP - WINDOW_INSET };
+}
+
+// the outline is drawn round the frame the window would have there
+static rect_t snap_outline(const display_t *d, int zone) {
+    rect_t r = snap_rect(d, zone);
+    if (zone == SNAP_MAX)
+        return (rect_t){0, 0, d->width, d->height - TASKBAR_H};
+    return (rect_t){ r.x - WINDOW_INSET, r.y - WINDOW_INSET_TOP, r.w + WINDOW_INSET * 2,
+                     r.h + WINDOW_INSET_TOP + WINDOW_INSET };
+}
+
+static void snap_set(display_t *d, int zone) {
+    if (zone == snap_zone)
+        return;
+    if (snap_zone)
+        display_damage(d, snap_outline(d, snap_zone));
+    snap_zone = zone;
+    if (snap_zone)
+        display_damage(d, snap_outline(d, snap_zone));
+}
+
+static int snap_zone_at(const display_t *d, int x, int y) {
+    int right  = x >= d->width - 1;
+    int top    = y < SNAP_CORNER;
+    int bottom = y >= d->height - TASKBAR_H - SNAP_CORNER;
+
+    if (x <= 0)
+        return top ? SNAP_TL : bottom ? SNAP_BL : SNAP_LEFT;
+    if (right)
+        return top ? SNAP_TR : bottom ? SNAP_BR : SNAP_RIGHT;
+    if (y <= 0)
+        return x < SNAP_CORNER ? SNAP_TL : x >= d->width - SNAP_CORNER ? SNAP_TR : SNAP_MAX;
+    return SNAP_NONE;
+}
+
+static void snap(display_t *d, window_t *win, int zone) {
+    if (zone == SNAP_MAX) {
+        if (!win->maximised)
+            server_maximise(d, win);
+        return;
+    }
+
+    // where it goes back to is only kept the first time
+    if (!win->maximised && !win->snapped)
+        win->restore = window_content(win);
+    win->maximised = 0;
+    win->snapped   = (uint8_t)zone;
+    rect_t to = snap_rect(d, zone);
+    server_resize(d, win, to.x, to.y, to.w, to.h);
+}
+
+// back to how it was before it was snapped or maximised
+static void unsnap(display_t *d, window_t *win) {
+    if (win->maximised) {
+        server_maximise(d, win);
+        return;
+    }
+    if (!win->snapped)
+        return;
+    win->snapped = 0;
+    server_resize(d, win, win->restore.x, win->restore.y, win->restore.w, win->restore.h);
+}
+
+// what the windows key and an arrow does, from wherever the window is now
+void wm_tile(display_t *d, int dir) {
+    window_t *win = window_focused();
+    if (!win)
+        return;
+
+    int now = win->maximised ? SNAP_MAX : win->snapped;
+    int to  = now;
+    switch (dir) {
+        case WM_TILE_LEFT:
+            to = now == SNAP_RIGHT ? SNAP_NONE : now == SNAP_TR ? SNAP_TL : now == SNAP_BR ? SNAP_BL :
+                 (now == SNAP_TL || now == SNAP_BL) ? now : SNAP_LEFT;
+            break;
+        case WM_TILE_RIGHT:
+            to = now == SNAP_LEFT ? SNAP_NONE : now == SNAP_TL ? SNAP_TR : now == SNAP_BL ? SNAP_BR :
+                 (now == SNAP_TR || now == SNAP_BR) ? now : SNAP_RIGHT;
+            break;
+        case WM_TILE_UP:
+            to = now == SNAP_LEFT ? SNAP_TL : now == SNAP_RIGHT ? SNAP_TR : now == SNAP_BL ? SNAP_LEFT :
+                 now == SNAP_BR ? SNAP_RIGHT : (now == SNAP_TL || now == SNAP_TR) ? now : SNAP_MAX;
+            break;
+        case WM_TILE_DOWN:
+            if (now == SNAP_NONE) {
+                window_minimise(d, win);
+                return;
+            }
+            to = now == SNAP_LEFT ? SNAP_BL : now == SNAP_RIGHT ? SNAP_BR : now == SNAP_TL ? SNAP_LEFT :
+                 now == SNAP_TR ? SNAP_RIGHT : (now == SNAP_BL || now == SNAP_BR) ? now : SNAP_NONE;
+            break;
+    }
+    if (to == now)
+        return;
+    if (to == SNAP_NONE)
+        unsnap(d, win);
+    else
+        snap(d, win, to);
+}
+
+void wm_draw(display_t *d, rect_t clip) {
+    if (!snap_zone)
+        return;
+
+    // a red frame with a dark line either side of it
+    rect_t r = snap_outline(d, snap_zone);
+    for (int i = 0; i < SNAP_EDGE + 2; i++) {
+        uint32_t colour = (i == 0 || i == SNAP_EDGE + 1) ? COLOUR_DKSHADOW : COLOUR_CAPTION_R;
+        display_outline(d, clip, rect_shrink(r, i), colour);
+    }
+}
+
+// a maximised or snapped window goes back to its old size
+static void drag(display_t *d, int x, int y) {
+    window_t *win = dragging;
+
+    if (!drag_loose) {
+        int dx = x - drag_from_x;
+        int dy = y - drag_from_y;
+        if (dx * dx + dy * dy < SNAP_LOOSEN * SNAP_LOOSEN)
+            return;
+
+        // the pointer stays the same way along the title bar as it was
+        rect_t to = win->restore;
+        drag_dx   = win->w ? drag_dx * to.w / win->w : 0;
+        drag_loose     = 1;
+        win->maximised = 0;
+        win->snapped   = 0;
+        server_resize(d, win, x - drag_dx, y - drag_dy, to.w, to.h);
+
+        if (!dragging)
+            return;
+    }
+
+    window_move(d, win, x - drag_dx, y - drag_dy);
+    snap_set(d, snap_zone_at(d, x, y));
+}
+
 static void press(display_t *d, int x, int y, uint8_t buttons) {
     window_t *win = window_at(x, y);
     if (!win)
@@ -310,6 +489,7 @@ static void press(display_t *d, int x, int y, uint8_t buttons) {
         resize_want   = resize_start;
         resize_sent   = 0;
     } else if (rect_contains(window_titlebar(win), x, y)) {
+        // twice on the title bar maximises it, or puts it back
         uint64_t now = clock_now();
         if (clicked == win && now - clicked_at < DOUBLE_CLICK_FS) {
             clicked = NULL;
@@ -319,12 +499,12 @@ static void press(display_t *d, int x, int y, uint8_t buttons) {
         clicked    = win;
         clicked_at = now;
 
-        // a window filling the screen has nowhere to be dragged to
-        if (!win->maximised) {
-            dragging = win;
-            drag_dx  = x - win->x;
-            drag_dy  = y - win->y;
-        }
+        dragging    = win;
+        drag_dx     = x - win->x;
+        drag_dy     = y - win->y;
+        drag_from_x = x;
+        drag_from_y = y;
+        drag_loose  = !win->maximised && !win->snapped;
     } else if (rect_contains(window_content(win), x, y)) {
         // clicking in a window that wants the pointer is how it gets it back after alt tab
         win->lock_broken = 0;
@@ -363,6 +543,10 @@ static void release(display_t *d, int x, int y, uint8_t buttons) {
         resizing = NULL;
     }
 
+    if (dragging && snap_zone)
+        snap(d, dragging, snap_zone);
+    snap_set(d, SNAP_NONE);
+
     dragging = NULL;
     grabbed  = NULL;
 }
@@ -373,11 +557,31 @@ void wm_mouse(display_t *d, int x, int y, uint8_t buttons) {
     uint8_t was_left = was & MOUSE_BTN_LEFT;
     buttons_last = buttons;
 
+    int idle = !dragging && !resizing && !grabbed && !pressing;
+
+    // the cards at the top right are over everything, dialogs included
+    if (idle && notify_mouse(d, x, y, buttons, was)) {
+        hover_edges = 0;
+        button_hover(d, -1, -1);
+        return;
+    }
+
+    // a dialog has the mouse to itself
+    if (!dragging && !resizing && !grabbed && !pressing && dialog_up()) {
+        hover_edges = 0;
+        button_hover(d, -1, -1);
+        dialog_mouse(d, x, y, buttons, was);
+        return;
+    }
     if (!dragging && !resizing && !grabbed && !pressing && taskbar_mouse(d, x, y, buttons, was)) {
         hover_edges = 0;
         button_hover(d, -1, -1);
         return;
     }
+
+    // a press on the bare desktop, or an icon being dragged about on it
+    if (idle && desktop_mouse(d, x, y, buttons, was))
+        return;
 
     if (left && !was_left) {
         press(d, x, y, buttons);
@@ -391,7 +595,7 @@ void wm_mouse(display_t *d, int x, int y, uint8_t buttons) {
     }
 
     if (dragging) {
-        window_move(d, dragging, x - drag_dx, y - drag_dy);
+        drag(d, x, y);
         return;
     }
     if (resizing) {
@@ -430,8 +634,28 @@ void wm_frame(display_t *d) {
     send_mouse(d, win, motion_x, motion_y, buttons_last);
 }
 
+void wm_wheel(display_t *d, int x, int y, int wheel) {
+    window_t *win = locked ? locked : grabbed;
+    if (!win) {
+        win = window_at(x, y);
+        if (win && !rect_contains(window_content(win), x, y))
+            win = NULL;
+    }
+    if (!win)
+        return;
+
+    cs_msg_t msg = {
+        .type    = CS_EV_WHEEL,
+        .x       = x - win->x,
+        .y       = y - win->y,
+        .buttons = buttons_last,
+        .wheel   = wheel,
+    };
+    server_send(d, win, &msg);
+}
+
 void wm_key(display_t *d, const keyboard_event_t *ev) {
-    window_t *win = window_top();
+    window_t *win = window_focused();
     if (!win)
         return;
 

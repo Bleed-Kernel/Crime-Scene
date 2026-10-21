@@ -15,7 +15,7 @@ LIBC = $(LIB_DIR)/blibc.a
 CRT0 = $(LIB_DIR)/start.o
 
 BLIBC_REPO = https://github.com/Bleed-Kernel/blibc.git
-BLIBC_DIR  ?= external/blibc
+BLIBC_DIR  ?= $(if $(wildcard ../blibc/include/bleed),../blibc,external/blibc)
 
 COMMON_CFLAGS = \
 	-ffreestanding \
@@ -73,12 +73,12 @@ $(ELF_OBJ_DIR_64)/%.o: %.c
 
 $(ELF_OBJS_64) $(LIB_OBJS_64): | blibc
 
-blibc: $(LIBC)
-
-$(LIBC):
+blibc:
 	@echo "[BLIBC] Preparing blibc"
 	@if [ ! -d "$(BLIBC_DIR)" ]; then \
 		git clone $(BLIBC_REPO) $(BLIBC_DIR); \
+	elif [ "$(BLIBC_DIR)" = "external/blibc" ]; then \
+		git -C $(BLIBC_DIR) pull --ff-only -q || echo "[BLIBC] couldnt pull, using what's there"; \
 	fi
 	$(MAKE) -C $(BLIBC_DIR)
 

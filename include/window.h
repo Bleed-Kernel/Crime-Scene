@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <display.h>
 #include <crime/crime.h>
+#include <icon.h>
 
 // how far the outside of the window is from the content
 #define WINDOW_FRAME     4      // the raised edge and the grey inside it
@@ -12,6 +13,9 @@
 
 #define WINDOW_BUTTON_W  18
 #define WINDOW_BUTTON_H  16
+
+#define WINDOW_ICON_LEFT 3      // the title bar icon in from the left, like 9x
+#define WINDOW_ICON_GAP  7      // between it and the title
 
 // the buttons on the title bar
 #define WINDOW_BUTTON_MIN   1
@@ -34,11 +38,15 @@ typedef struct window {
     int       w, h;
     int       cap_w, cap_h;
     char      title[CS_TITLE_MAX];
+    const icon_t *icon;     // on the title bar and the taskbar button, NULL if the program has none
     uint8_t   button_down;  // which title bar button is being held in
     uint8_t   button_hover; // which one the pointer is sitting on
 
+    uint8_t   hidden;       // being animated, its picture is drawn instead of it
+
     uint8_t   minimised;    // not on screen, only its taskbar button is
     uint8_t   maximised;    // filling the screen, restore is what it goes back to
+    uint8_t   snapped;      // filling a half or a quarter of it, which one. restore is kept the same way
     rect_t    restore;
 
     uint8_t   wants_lock;
@@ -70,15 +78,30 @@ window_t *window_find(uint32_t id);
 window_t *window_at(int x, int y);
 window_t *window_top(void);
 
+// where the frame goes round a window with content at content, its title bar included
+rect_t    window_frame_around(rect_t content);
+
+// a focused looking frame with no buttons
+void      window_chrome_draw(display_t *d, rect_t clip, rect_t content, const char *title);
+
+// the window and its frame without the shadow, the caller can free
+uint32_t *window_snapshot(const window_t *win, int focused, int *w, int *h);
+
+window_t *window_focused(void);
+void      window_focus_hold(display_t *d, int hold);
+
 // bottom to top, NULL once index runs off the end
 window_t *window_index(int index);
 
-rect_t window_frame(const window_t *win);
+rect_t window_frame(const window_t *win);      // the title bar and the body, all of it that can be grabbed
 rect_t window_bounds(const window_t *win);     // the frame plus its shadow, what to damage
 rect_t window_titlebar(const window_t *win);
 rect_t window_content(const window_t *win);
 rect_t window_button(const window_t *win, int which);
 int    window_button_at(const window_t *win, int x, int y);
+
+// whats behind every window: the wallpaper and the icons on it
+void windows_background(display_t *d, rect_t clip);
 
 // everything inside clip: the wallpaper, then the windows from the bottom up
 void windows_compose(display_t *d, rect_t clip);

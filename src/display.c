@@ -4,6 +4,7 @@
 #include <syscalls.h>
 #include <display.h>
 #include <bleed/display.h>
+#include <theme.h>
 
 #define PAGE_SIZE 4096UL
 
@@ -76,6 +77,14 @@ int rect_overlaps(rect_t a, rect_t b) {
     return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
 }
 
+rect_t rect_lerp(rect_t a, rect_t b, float t) {
+    return (rect_t){
+        a.x + (int)((float)(b.x - a.x) * t), a.y + (int)((float)(b.y - a.y) * t),
+        a.w + (int)((float)(b.w - a.w) * t), a.h + (int)((float)(b.h - a.h) * t),
+    };
+}
+
+
 static rect_t display_bounds(const display_t *d) {
     return (rect_t){0, 0, d->width, d->height};
 }
@@ -117,6 +126,17 @@ void display_fill(display_t *d, rect_t r, uint32_t colour) {
 
     for (int y = r.y; y < r.y + r.h; y++) {
         pixels_fill(d->back + (size_t)y * d->pitch + r.x, colour, (size_t)r.w);
+    }
+}
+
+void display_dim(display_t *d, rect_t r, uint32_t keep) {
+    for (int y = r.y; y < r.y + r.h; y++) {
+        uint32_t *row = d->back + (size_t)y * d->pitch;
+        for (int x = r.x; x < r.x + r.w; x++) {
+            uint32_t rb = ((row[x] & 0xFF00FF) * keep >> 8) & 0xFF00FF;
+            uint32_t g  = ((row[x] & 0x00FF00) * keep >> 8) & 0x00FF00;
+            row[x] = rb | g;
+        }
     }
 }
 
@@ -179,6 +199,57 @@ void display_gradient(display_t *d, rect_t clip, rect_t r, uint32_t from, uint32
 
         for (int x = clip.x; x < clip.x + clip.w; x++)
             row[x] = gradient_pixel(&g, vertical ? y - r.y : x - r.x, bayer[y & 3][x & 3]);
+    }
+}
+
+void display_outline(display_t *d, rect_t clip, rect_t r, uint32_t colour) {
+    display_edge(d, clip, r, colour, colour);
+}
+
+void display_button(display_t *d, rect_t clip, rect_t r, int down, int hot) {
+    display_fill(d, rect_clip(r, clip), down ? COLOUR_LIGHT : hot ? COLOUR_BUTTON_LIT : COLOUR_FACE);
+    if (down) {
+        display_edge(d, clip, r, COLOUR_DKSHADOW, COLOUR_HILIGHT);
+        display_edge(d, clip, rect_shrink(r, 1), COLOUR_SHADOW, COLOUR_LIGHT);
+    } else {
+        display_edge(d, clip, r, COLOUR_HILIGHT, COLOUR_DKSHADOW);
+        display_edge(d, clip, rect_shrink(r, 1), COLOUR_LIGHT, COLOUR_SHADOW);
+    }
+}
+
+void display_raised(display_t *d, rect_t clip, rect_t r) {
+    display_fill(d, rect_clip(r, clip), COLOUR_FACE);
+    display_edge(d, clip, r, COLOUR_LIGHT, COLOUR_DKSHADOW);
+    display_edge(d, clip, rect_shrink(r, 1), COLOUR_HILIGHT, COLOUR_SHADOW);
+}
+
+void display_sunken(display_t *d, rect_t clip, rect_t r) {
+    display_edge(d, clip, r, COLOUR_SHADOW, COLOUR_HILIGHT);
+    display_edge(d, clip, rect_shrink(r, 1), COLOUR_DKSHADOW, COLOUR_LIGHT);
+}
+
+void display_blit_scaled(display_t *d, rect_t clip, rect_t to, const uint32_t *src, int w, int h, int alpha) {
+    rect_t r = rect_clip(rect_clip(to, clip), display_bounds(d));
+    if (!r.w || !r.h || !to.w || !to.h)
+        return;
+
+    for (int y = r.y; y < r.y + r.h; y++) {
+        const uint32_t *in  = src + (size_t)((y - to.y) * h / to.h) * w;
+        uint32_t       *out = d->back + (size_t)y * d->pitch;
+
+        for (int x = r.x; x < r.x + r.w; x++) {
+            uint32_t p = in[(x - to.x) * w / to.w];
+            if (p == DISPLAY_CLEAR)
+                continue;
+            if (alpha >= 256) {
+                out[x] = p & 0xFFFFFF;
+                continue;
+            }
+            uint32_t a  = (uint32_t)alpha;
+            uint32_t rb = ((out[x] & 0xFF00FF) * (256 - a) + (p & 0xFF00FF) * a) >> 8;
+            uint32_t g  = ((out[x] & 0x00FF00) * (256 - a) + (p & 0x00FF00) * a) >> 8;
+            out[x] = (rb & 0xFF00FF) | (g & 0x00FF00);
+        }
     }
 }
 
@@ -261,6 +332,33 @@ void display_blit(display_t *d, rect_t clip, int x, int y, const uint32_t *src, 
     for (int row = r.y; row < r.y + r.h; row++) {
         pixels_copy(d->back + (size_t)row * d->pitch + r.x,
                     src + (size_t)(row - y) * pitch + (r.x - x), (size_t)r.w);
+    }
+}
+
+void display_blend(display_t *d, rect_t clip, int x, int y, const uint32_t *src, int w, int h) {
+    rect_t r = rect_clip(rect_clip((rect_t){x, y, w, h}, clip), display_bounds(d));
+
+    for (int row = r.y; row < r.y + r.h; row++) {
+        uint32_t       *dst = d->back + (size_t)row * d->pitch;
+        const uint32_t *in  = src + (size_t)(row - y) * w - x;
+
+        for (int col = r.x; col < r.x + r.w; col++) {
+            uint32_t a = in[col] >> 24;
+            if (!a)
+                continue;
+            if (a == 255) {
+                dst[col] = in[col] & 0xFFFFFF;
+                continue;
+            }
+
+            uint32_t out = 0;
+            for (int shift = 0; shift < 24; shift += 8) {
+                uint32_t over  = (in[col] >> shift) & 0xFF;
+                uint32_t under = (dst[col] >> shift) & 0xFF;
+                out |= ((over * a + under * (255 - a) + 127) / 255) << shift;
+            }
+            dst[col] = out;
+        }
     }
 }
 

@@ -19,5 +19,8 @@ void server_resize(display_t *d, window_t *win, int x, int y, int w, int h);
 // fill the screen, or go back to how it was before it did
 void server_maximise(display_t *d, window_t *win);
 
+// kill it now!
+void server_kill(display_t *d, window_t *win);
+
 // tell clients when the window with the focus changes
 void server_focus(display_t *d);

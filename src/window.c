@@ -6,6 +6,8 @@
 #include <theme.h>
 #include <taskbar.h>
 #include <wallpaper.h>
+#include <anim.h>
+#include <desktop.h>
 #include <crime/crime.h>
 
 #define SHADOW_REACH        11
@@ -24,17 +26,55 @@ static int        stack_cap;
 static uint32_t  next_id = 1;
 static int       cascade;               // how many steps from the corner the last new window went
 
+// what a frame is drawn from
+typedef struct {
+    rect_t        content;
+    const char   *title;
+    const icon_t *icon;
+    int           focused;
+    int           buttons;      // the three on the title bar
+    int           sunken;       // the content is set into the frame, the desktops own things sit flush
+} chrome_t;
+
+static chrome_t chrome_of(const window_t *win) {
+    return (chrome_t){ window_content(win), win->title, win->icon, win == window_focused(), 1, 1 };
+}
+
 rect_t window_content(const window_t *win) {
     return (rect_t){win->x, win->y, win->w, win->h};
 }
 
-rect_t window_frame(const window_t *win) {
+rect_t window_frame_around(rect_t content) {
     return (rect_t){
-        win->x - WINDOW_INSET,
-        win->y - WINDOW_INSET_TOP,
-        win->w + WINDOW_INSET * 2,
-        win->h + WINDOW_INSET_TOP + WINDOW_INSET
+        content.x - WINDOW_INSET,
+        content.y - WINDOW_INSET_TOP,
+        content.w + WINDOW_INSET * 2,
+        content.h + WINDOW_INSET_TOP + WINDOW_INSET
     };
+}
+
+static rect_t chrome_frame(const chrome_t *c) {
+    return window_frame_around(c->content);
+}
+
+static rect_t chrome_caption(rect_t content) {
+    rect_t frame = window_frame_around(content);
+    return (rect_t){frame.x + WINDOW_FRAME, frame.y + WINDOW_FRAME, frame.w - WINDOW_FRAME * 2, WINDOW_CAPTION};
+}
+
+// close on the far right, then a gap, then maximise and minimise side by side
+static rect_t chrome_button(const chrome_t *c, int which) {
+    rect_t bar = chrome_caption(c->content);
+    int    x   = bar.x + bar.w - 3 - WINDOW_BUTTON_W;
+
+    if (which != WINDOW_BUTTON_CLOSE) x -= WINDOW_BUTTON_W + 2;
+    if (which == WINDOW_BUTTON_MIN)   x -= WINDOW_BUTTON_W;
+    return (rect_t){x, bar.y + 3, WINDOW_BUTTON_W, WINDOW_BUTTON_H};
+}
+
+rect_t window_frame(const window_t *win) {
+    chrome_t c = chrome_of(win);
+    return chrome_frame(&c);
 }
 
 rect_t window_bounds(const window_t *win) {
@@ -44,18 +84,12 @@ rect_t window_bounds(const window_t *win) {
 }
 
 rect_t window_titlebar(const window_t *win) {
-    rect_t frame = window_frame(win);
-    return (rect_t){frame.x + WINDOW_FRAME, frame.y + WINDOW_FRAME, frame.w - WINDOW_FRAME * 2, WINDOW_CAPTION};
+    return chrome_caption(window_content(win));
 }
 
-// close on the far right, then a gap, then maximise and minimise side by side
 rect_t window_button(const window_t *win, int which) {
-    rect_t bar = window_titlebar(win);
-    int    x   = bar.x + bar.w - 3 - WINDOW_BUTTON_W;
-
-    if (which != WINDOW_BUTTON_CLOSE) x -= WINDOW_BUTTON_W + 2;
-    if (which == WINDOW_BUTTON_MIN)   x -= WINDOW_BUTTON_W;
-    return (rect_t){x, bar.y + 3, WINDOW_BUTTON_W, WINDOW_BUTTON_H};
+    chrome_t c = chrome_of(win);
+    return chrome_button(&c, which);
 }
 
 int window_button_at(const window_t *win, int x, int y) {
@@ -64,6 +98,10 @@ int window_button_at(const window_t *win, int x, int y) {
             return which;
     }
     return 0;
+}
+
+static int on_window(const window_t *win, int x, int y) {
+    return rect_contains(window_frame(win), x, y);
 }
 
 // the frame hangs off every edge by its own width, so only the title bar and content show
@@ -76,6 +114,10 @@ rect_t window_maximised_rect(const display_t *d) {
     };
 }
 
+static int shown(const window_t *win) {
+    return !win->minimised && !win->hidden;
+}
+
 // the highest window thats actually on screen, thats the one with the focus
 window_t *window_top(void) {
     for (int i = stack_count - 1; i >= 0; i--) {
@@ -83,6 +125,20 @@ window_t *window_top(void) {
             return stack[i];
     }
     return NULL;
+}
+
+static int focus_held;
+
+window_t *window_focused(void) {
+    return focus_held ? NULL : window_top();
+}
+
+void window_focus_hold(display_t *d, int hold) {
+    if (hold == focus_held)
+        return;
+    focus_held = hold;
+    if (window_top())
+        display_damage(d, window_bounds(window_top()));
 }
 
 window_t *window_index(int index) {
@@ -101,7 +157,7 @@ window_t *window_find(uint32_t id) {
 
 window_t *window_at(int x, int y) {
     for (int i = stack_count - 1; i >= 0; i--) {
-        if (!stack[i]->minimised && rect_contains(window_frame(stack[i]), x, y))
+        if (shown(stack[i]) && on_window(stack[i], x, y))
             return stack[i];
     }
     return NULL;
@@ -215,6 +271,7 @@ window_t *window_open(display_t *d, uint64_t owner, int w, int h, const char *ti
 
     strncpy(win->title, title, CS_TITLE_MAX - 1);
     win->title[CS_TITLE_MAX - 1] = '\0';
+    win->icon = icon_for_task(owner);
 
     // the old top one loses the focus, its title bar has to change
     if (window_top())
@@ -222,6 +279,7 @@ window_t *window_open(display_t *d, uint64_t owner, int w, int h, const char *ti
 
     stack[stack_count++] = win;
     display_damage(d, window_bounds(win));
+    anim_open(d, win);
     return win;
 }
 
@@ -285,6 +343,10 @@ static void stack_remove(window_t *win) {
 }
 
 void window_close(display_t *d, window_t *win) {
+    if (!win->minimised)
+        anim_close(d, win);
+    else
+        anim_forget(win);
     display_damage(d, window_bounds(win));
     stack_remove(win);
 
@@ -302,6 +364,7 @@ void window_minimise(display_t *d, window_t *win) {
 
     display_damage(d, window_bounds(win));
     win->minimised = 1;
+    anim_minimise(d, win, taskbar_button_of(d, win));
 
     // whatever is top now gets the focus, and has to look like it
     if (window_top())
@@ -312,6 +375,7 @@ void window_restore(display_t *d, window_t *win) {
     win->minimised = 0;
     window_raise(d, win);
     display_damage(d, window_bounds(win));
+    anim_restore(d, win, taskbar_button_of(d, win));
 }
 
 void window_raise(display_t *d, window_t *win) {
@@ -349,6 +413,7 @@ static void fill(display_t *d, rect_t clip, rect_t r, uint32_t colour) {
 #define GLYPH_W 16
 #define GLYPH_H 14
 
+// hopefully korben doesnt see this because ill have to swallow a huge slice of pride
 static const char *button_glyphs[][GLYPH_H] = {
     [WINDOW_BUTTON_MIN] = {
         "                ",
@@ -463,17 +528,17 @@ static void button_draw(display_t *d, rect_t clip, const window_t *win, int whic
     }
 }
 
-static void window_draw(display_t *d, rect_t clip, const window_t *win, int focused) {
-    rect_t frame = window_frame(win);
-    clip = rect_clip(clip, window_bounds(win));
-    if (!clip.w || !clip.h)
-        return;
+// everything round the content but the buttons
+static void chrome_draw(display_t *d, rect_t clip, const chrome_t *c, int shadow) {
+    rect_t frame   = chrome_frame(c);
+    rect_t content = c->content;
 
-    rect_t caster = {frame.x, frame.y + SHADOW_DROP, frame.w, frame.h};
-    display_shadow(d, clip, caster, frame, SHADOW_REACH, focused ? SHADOW_FOCUSED : SHADOW_BACK);
+    if (shadow) {
+        rect_t caster = {frame.x, frame.y + SHADOW_DROP, frame.w, frame.h};
+        display_shadow(d, clip, caster, frame, SHADOW_REACH, c->focused ? SHADOW_FOCUSED : SHADOW_BACK);
+    }
 
     // just the grey round the outside, the content covers the middle
-    rect_t content = window_content(win);
     fill(d, clip, (rect_t){frame.x, frame.y, frame.w, content.y - frame.y}, COLOUR_FACE);
     fill(d, clip, (rect_t){frame.x, content.y + content.h, frame.w, WINDOW_INSET}, COLOUR_FACE);
     fill(d, clip, (rect_t){frame.x, content.y, WINDOW_INSET, content.h}, COLOUR_FACE);
@@ -481,26 +546,65 @@ static void window_draw(display_t *d, rect_t clip, const window_t *win, int focu
     display_edge(d, clip, frame, COLOUR_LIGHT, COLOUR_DKSHADOW);
     display_edge(d, clip, rect_shrink(frame, 1), COLOUR_HILIGHT, COLOUR_SHADOW);
 
-    rect_t bar = window_titlebar(win);
-    display_gradient(d, clip, bar,
-                     focused ? COLOUR_CAPTION_L : COLOUR_BACK_L,
-                     focused ? COLOUR_CAPTION_R : COLOUR_BACK_R, 0);
+    rect_t bar = chrome_caption(content);
+    display_gradient(d, clip, bar, c->focused ? COLOUR_CAPTION_L : COLOUR_BACK_L,
+                     c->focused ? COLOUR_CAPTION_R : COLOUR_BACK_R, 0);
 
-    uint32_t ink = focused ? COLOUR_CAPTION_TEXT : COLOUR_BACK_TEXT;
+    int x = bar.x + 6;
+    if (c->icon) {
+        x = bar.x + WINDOW_ICON_LEFT;
+        display_blend(d, rect_clip(bar, clip), x, bar.y + (bar.h - c->icon->h) / 2, c->icon->pixels, c->icon->w,
+                      c->icon->h);
+        x += c->icon->w + WINDOW_ICON_GAP - WINDOW_ICON_LEFT;
+    }
+
     // the title stops short of the buttons instead of running underneath them
-    rect_t button = window_button(win, WINDOW_BUTTON_MIN);
-    rect_t text   = {bar.x + 6, bar.y, 0, bar.h};
-    text.w = button.x - 4 - text.x;
-    font_draw(d, rect_clip(text, clip), &font_caption, text.x, bar.y + (bar.h - font_height(&font_caption)) / 2,
-              win->title, ink);
+    int    end  = c->buttons ? chrome_button(c, WINDOW_BUTTON_MIN).x - 4 : bar.x + bar.w - 6;
+    rect_t text = {x, bar.y, end - x, bar.h};
+    font_draw(d, rect_clip(text, clip), &font_caption, x, bar.y + (bar.h - font_height(&font_caption)) / 2,
+              c->title, c->focused ? COLOUR_CAPTION_TEXT : COLOUR_BACK_TEXT);
+
+    if (c->sunken)
+        display_sunken(d, clip, rect_shrink(content, -WINDOW_EDGE));
+}
+
+void window_chrome_draw(display_t *d, rect_t clip, rect_t content, const char *title) {
+    chrome_t c = { content, title, NULL, 1, 0, 0 };
+    chrome_draw(d, clip, &c, 1);
+}
+
+static void window_draw(display_t *d, rect_t clip, const window_t *win, int focused, int shadow) {
+    clip = rect_clip(clip, window_bounds(win));
+    if (!clip.w || !clip.h)
+        return;
+
+    chrome_t c = chrome_of(win);
+    c.focused  = focused;
+    chrome_draw(d, clip, &c, shadow);
 
     for (int which = WINDOW_BUTTON_MIN; which <= WINDOW_BUTTON_CLOSE; which++)
         button_draw(d, clip, win, which);
 
-    rect_t sunken = rect_shrink(content, -WINDOW_EDGE);
-    display_edge(d, clip, sunken, COLOUR_SHADOW, COLOUR_HILIGHT);
-    display_edge(d, clip, rect_shrink(sunken, 1), COLOUR_DKSHADOW, COLOUR_LIGHT);
     display_blit(d, clip, win->x, win->y, win->pixels, win->w, win->h, win->cap_w);
+}
+
+uint32_t *window_snapshot(const window_t *win, int focused, int *w, int *h) {
+    rect_t    frame  = window_frame(win);
+    uint32_t *pixels = malloc((size_t)frame.w * frame.h * sizeof(uint32_t));
+    if (!pixels)
+        return NULL;
+    for (size_t i = 0; i < (size_t)frame.w * frame.h; i++)
+        pixels[i] = DISPLAY_CLEAR;
+
+    window_t  moved = *win;
+    display_t into  = { .back = pixels, .width = frame.w, .height = frame.h, .pitch = frame.w };
+    moved.x -= frame.x;
+    moved.y -= frame.y;
+    window_draw(&into, (rect_t){0, 0, frame.w, frame.h}, &moved, focused, 0);
+
+    *w = frame.w;
+    *h = frame.h;
+    return pixels;
 }
 
 // top is the highest window that could still show in clip. a frame is solid, so nothing below
@@ -509,15 +613,15 @@ static void compose(display_t *d, rect_t clip, int top) {
     if (!clip.w || !clip.h)
         return;
 
-    while (top >= 0 && (stack[top]->minimised || !rect_overlaps(window_bounds(stack[top]), clip)))
+    while (top >= 0 && (!shown(stack[top]) || !rect_overlaps(window_bounds(stack[top]), clip)))
         top--;
     if (top < 0) {
-        wallpaper_draw(d, clip);
+        windows_background(d, clip);
         return;
     }
 
-    window_t *win  = stack[top];
-    rect_t   solid = rect_clip(window_frame(win), clip);
+    window_t *win   = stack[top];
+    rect_t    solid = rect_clip(window_frame(win), clip);
 
     if (!solid.w || !solid.h) {
         // only its shadow reaches in here
@@ -532,7 +636,12 @@ static void compose(display_t *d, rect_t clip, int top) {
         compose(d, (rect_t){right, solid.y, clip.x + clip.w - right, solid.h}, top - 1);
     }
 
-    window_draw(d, clip, win, win == window_top());
+    window_draw(d, clip, win, win == window_focused(), 1);
+}
+
+void windows_background(display_t *d, rect_t clip) {
+    wallpaper_draw(d, clip);
+    desktop_draw(d, clip);
 }
 
 void windows_compose(display_t *d, rect_t clip) {

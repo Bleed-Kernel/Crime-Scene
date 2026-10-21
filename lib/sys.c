@@ -7,6 +7,7 @@
 #define SYS_SHM_CREATE  522
 #define SYS_SHM_MAP     523
 #define SYS_SHM_DESTROY 524
+#define SYS_TASKPATH    526
 
 // i mean really this should all be in libc? i didnt fancy it tho i hadnt cleaned up libc yet
 
@@ -35,6 +36,10 @@ long shm_map(unsigned long id, size_t *pages_out) {
 
 long shm_destroy(unsigned long id) {
     return syscall3(SYS_SHM_DESTROY, (long)id, 0, 0);
+}
+
+long task_path(uint64_t pid, char *buf, unsigned long size) {
+    return syscall3(SYS_TASKPATH, (long)pid, (long)buf, (long)size);
 }
 
 // the kernel moves the page to the other task, so every message gets a fresh one
