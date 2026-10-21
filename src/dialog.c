@@ -20,6 +20,12 @@
 #define KEY_ESCAPE      27
 #define KEY_BACKSPACE   '\b'
 
+#define KEY_HOME        0x47
+#define KEY_LEFT        0x4B
+#define KEY_RIGHT       0x4D
+#define KEY_END         0x4F
+#define KEY_DELETE      0x53
+
 enum { DIALOG_NONE, DIALOG_CONFIRM, DIALOG_RUN };
 enum { BUTTON_NONE = -1, BUTTON_YES, BUTTON_CANCEL };
 
@@ -32,6 +38,8 @@ static void (*yes_fn)(display_t *d);
 static char  typed[TEXT_MAX];       // whats in the run box, kept for next time like 9x does
 static int   failed;                // the last thing typed in couldnt be found
 static int   selected;              // whats there from last time is picked out, typing replaces it
+static int   at;                    // where the caret is in typed
+static int   scroll;                // first character showing in the box
 
 static int   pressed = BUTTON_NONE;
 static int   pressed_over;
@@ -103,6 +111,8 @@ void dialog_run(display_t *d) {
     copy(yes_label, sizeof(yes_label), "OK");
     failed   = 0;
     selected = typed[0] != '\0';
+    at       = strlen(typed);
+    scroll   = 0;
     set(d, DIALOG_RUN);
 }
 
@@ -141,6 +151,13 @@ static void button_draw(display_t *d, rect_t clip, rect_t r, const char *label, 
     font_draw(d, rect_clip(rect_shrink(r, 2), clip), &font_ui, tx, ty, label, COLOUR_TEXT);
 }
 
+static int text_width(const char *s, int n) {
+    char part[TEXT_MAX];
+    memcpy(part, s, n);
+    part[n] = '\0';
+    return font_text_width(&font_ui, part);
+}
+
 void dialog_draw(display_t *d, rect_t clip) {
     if (!kind)
         return;
@@ -160,11 +177,16 @@ void dialog_draw(display_t *d, rect_t clip) {
         display_fill(d, rect_clip(rect_shrink(field, 2), clip), COLOUR_SHADOW);
         display_sunken(d, clip, field);
 
-        // the end of it if its too long to fit, thats where the typing is
-        rect_t      inside = rect_shrink(field, FIELD_PAD);
-        const char *shown  = typed;
-        while (*shown && font_text_width(&font_ui, shown) > inside.w - 2)
-            shown++;
+        // scrolled just far enough to keep the caret in the box
+        rect_t inside = rect_shrink(field, FIELD_PAD);
+        int    room   = inside.w - 2;
+        if (scroll > at)
+            scroll = at;
+        while (scroll < at && text_width(typed + scroll, at - scroll) > room)
+            scroll++;
+        while (scroll > 0 && font_text_width(&font_ui, typed + scroll - 1) <= room)
+            scroll--;
+        const char *shown = typed + scroll;
 
         int ty = field.y + (field.h - font_height(&font_ui)) / 2;
         if (selected) {
@@ -173,7 +195,7 @@ void dialog_draw(display_t *d, rect_t clip) {
         }
         font_draw(d, rect_clip(inside, clip), &font_ui, inside.x, ty, shown, COLOUR_TEXT);
 
-        rect_t caret = {inside.x + font_text_width(&font_ui, shown), ty, 1, font_height(&font_ui)};
+        rect_t caret = {inside.x + text_width(shown, at - scroll), ty, 1, font_height(&font_ui)};
         display_fill(d, rect_clip(rect_clip(caret, inside), clip), COLOUR_TEXT);
 
         if (failed)
@@ -232,23 +254,45 @@ int dialog_key(display_t *d, const keyboard_event_t *ev) {
     if (kind != DIALOG_RUN)
         return 1;
 
+    int len = strlen(typed);
+    int key = ev->keycode;
+    if (key == KEY_LEFT || key == KEY_RIGHT || key == KEY_HOME || key == KEY_END) {
+        if (selected)
+            at = (key == KEY_LEFT || key == KEY_HOME) ? 0 : len;
+        else if (key == KEY_LEFT && at > 0)
+            at--;
+        else if (key == KEY_RIGHT && at < len)
+            at++;
+        else if (key == KEY_HOME)
+            at = 0;
+        else if (key == KEY_END)
+            at = len;
+        selected = 0;
+        display_damage(d, dialog_rect(d));
+        return 1;
+    }
+
     // a key that changes it starts it over if the old text was picked out
     int printable = c >= ' ' && c < 127 && !(ev->keymod & (KEYMOD_CTRL | KEYMOD_ALT));
-    if (selected && (printable || c == KEY_BACKSPACE)) {
+    if (selected && (printable || c == KEY_BACKSPACE || key == KEY_DELETE)) {
         typed[0] = '\0';
+        at       = 0;
+        len      = 0;
         selected = 0;
-        if (c == KEY_BACKSPACE) {
+        if (!printable) {
             display_damage(d, dialog_rect(d));
             return 1;
         }
     }
 
-    size_t len = strlen(typed);
-    if (c == KEY_BACKSPACE && len) {
-        typed[len - 1] = '\0';
+    if (c == KEY_BACKSPACE && at > 0) {
+        memmove(typed + at - 1, typed + at, len - at + 1);
+        at--;
+    } else if (key == KEY_DELETE && at < len) {
+        memmove(typed + at, typed + at + 1, len - at);
     } else if (printable && len < TEXT_MAX - 1) {
-        typed[len]     = c;
-        typed[len + 1] = '\0';
+        memmove(typed + at + 1, typed + at, len - at + 1);
+        typed[at++] = c;
     } else {
         return 1;
     }
