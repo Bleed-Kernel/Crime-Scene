@@ -32,3 +32,5 @@ void taskbar_frame(display_t *d);
 
 // returns 1 if that was the taskbars to deal with and nothing under it should see it
 int taskbar_mouse(display_t *d, int x, int y, uint8_t buttons, uint8_t was_buttons);
+
+int taskbar_wheel(display_t *d, int x, int y, int wheel);

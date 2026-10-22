@@ -141,7 +141,7 @@ static int input(int mouse) {
         }
         cursor_move(&cursor, &display, mev.dx, mev.dy);
         wm_mouse(&display, cursor.x, cursor.y, ctrl_click(mev.buttons));
-        if (mev.wheel)
+        if (mev.wheel && !taskbar_wheel(&display, cursor.x, cursor.y, mev.wheel))
             wm_wheel(&display, cursor.x, cursor.y, mev.wheel);
     }
     cursor.shape = overview_up() ? CURSOR_ARROW : wm_cursor();

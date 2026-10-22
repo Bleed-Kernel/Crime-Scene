@@ -18,6 +18,7 @@
 #include <apps.h>
 #include <dialog.h>
 #include <notify.h>
+#include <volume.h>
 
 #define BUTTON_TOP      4
 #define BUTTON_H        30
@@ -39,6 +40,23 @@
 #define BATT_LOW_PERCENT 20
 #define BATT_CHECK_FS   (5000 * FS_PER_MS)
 #define BATT_GAP        6       // either side of the divider between the battery and the time
+
+#define VOL_ICON_W      19      // the speaker in the tray
+#define VOL_ICON_H      16
+#define VOL_GAP         6
+#define VOL_CHECK_FS    (2000 * FS_PER_MS)
+#define VOL_W           76
+#define VOL_PAD         8
+#define VOL_TRACK_H     104
+#define VOL_THUMB_W     22
+#define VOL_THUMB_H     10
+#define VOL_TICK_W      4
+#define VOL_TICK_GAP    5
+#define VOL_TICKS       11
+#define VOL_STEP        5
+#define VOL_BOX         13
+#define VOL_LABEL       "Volume"
+#define VOL_MUTE        "Mute"
 
 #define TIP_PAD         8
 #define TIP_GAP         4       // between the tip and the top of the bar
@@ -117,6 +135,13 @@ static uint64_t batt_checked;
 static char     batt_text[8];
 static int      batt_hover;         // the pointer is on it
 static char     batt_tip[32];
+
+static int      vol_present;
+static int      vol_percent;
+static int      vol_mute;
+static uint64_t vol_checked;
+static int      vol_open;
+static int      vol_dragging;
 
 static int      hot_slot = SLOT_NONE;   // the button the pointer is on, lit up
 static int      hover_slot = SLOT_NONE; // the pin or task button the pointer is resting on
@@ -215,6 +240,7 @@ static void ctx_add(int act) {
 }
 
 static int window_pin(const window_t *win, app_t *out);
+static void vol_set_open(display_t *d, int open);
 
 static void ctx_set(display_t *d, int open, int target, int x, int y) {
     if (ctx_open)
@@ -257,6 +283,8 @@ static void ctx_set(display_t *d, int open, int target, int x, int y) {
 static void menu_set(display_t *d, int open) {
     if (open && ctx_open)
         ctx_set(d, CTX_NONE, 0, 0, 0);
+    if (open)
+        vol_set_open(d, 0);
     if (open == menu_open)
         return;
 
@@ -276,11 +304,12 @@ void taskbar_menu_toggle(display_t *d) {
 }
 
 int taskbar_menus_up(void) {
-    return menu_open || ctx_open;
+    return menu_open || ctx_open || vol_open;
 }
 
 void taskbar_menus_close(display_t *d) {
     menu_set(d, 0);
+    vol_set_open(d, 0);
     if (ctx_open)
         ctx_set(d, CTX_NONE, 0, 0, 0);
 }
@@ -449,6 +478,8 @@ static rect_t clock_tray(const display_t *d) {
     int    w   = font_digits_width(&font_ui, clock_text) + CLOCK_PAD * 2;
     if (mem_warn)
         w += WARN_W + WARN_GAP;
+    if (vol_present)
+        w += VOL_ICON_W + VOL_GAP;
     if (batt_present)
         w += font_text_width(&font_ui, batt_text) + BATT_GAP * 2 + DIVIDER_W;
     return (rect_t){bar.x + bar.w - BUTTON_GAP - w, bar.y + BUTTON_TOP, w, BUTTON_H};
@@ -464,11 +495,84 @@ static int tip_shown(void) {
     return mem_warn && (tip_hover || tip_pinned);
 }
 
+static rect_t vol_icon_rect(const display_t *d) {
+    rect_t tray = clock_tray(d);
+    int    x    = tray.x + CLOCK_PAD + (mem_warn ? WARN_W + WARN_GAP : 0);
+    return (rect_t){x, tray.y, VOL_ICON_W, tray.h};
+}
+
 // inside the tray, left of the divider. the whole height of it so its not fiddly to point at
 static rect_t batt_rect(const display_t *d) {
     rect_t tray = clock_tray(d);
-    int    x    = tray.x + CLOCK_PAD + (mem_warn ? WARN_W + WARN_GAP : 0);
+    int    x    = tray.x + CLOCK_PAD + (mem_warn ? WARN_W + WARN_GAP : 0) + (vol_present ? VOL_ICON_W + VOL_GAP : 0);
     return (rect_t){x, tray.y, font_text_width(&font_ui, batt_text), tray.h};
+}
+
+static rect_t vol_rect(const display_t *d) {
+    rect_t bar  = taskbar_rect(d);
+    rect_t icon = vol_icon_rect(d);
+    int    h    = VOL_PAD + font_height(&font_ui) + VOL_PAD + VOL_TRACK_H + VOL_PAD + font_height(&font_ui) +
+                  VOL_PAD + VOL_BOX + VOL_PAD;
+    int    x    = icon.x + icon.w / 2 - VOL_W / 2;
+    if (x + VOL_W > bar.x + bar.w - BUTTON_GAP) x = bar.x + bar.w - BUTTON_GAP - VOL_W;
+    return (rect_t){x, bar.y - h, VOL_W, h};
+}
+
+static rect_t vol_track(const display_t *d) {
+    rect_t r = vol_rect(d);
+    int    y = r.y + VOL_PAD + font_height(&font_ui) + VOL_PAD;
+    return (rect_t){r.x + (r.w - VOL_THUMB_W) / 2, y, VOL_THUMB_W, VOL_TRACK_H};
+}
+
+static rect_t vol_thumb(const display_t *d) {
+    rect_t track = vol_track(d);
+    int    y     = track.y + (100 - vol_percent) * (track.h - VOL_THUMB_H) / 100;
+    return (rect_t){track.x, y, VOL_THUMB_W, VOL_THUMB_H};
+}
+
+static rect_t vol_mute_rect(const display_t *d) {
+    rect_t r = vol_rect(d);
+    int    w = VOL_BOX + 4 + font_text_width(&font_ui, VOL_MUTE);
+    return (rect_t){r.x + (r.w - w) / 2, r.y + r.h - VOL_PAD - VOL_BOX, w, VOL_BOX};
+}
+
+static void vol_damage(display_t *d) {
+    if (vol_open)
+        display_damage(d, vol_rect(d));
+    if (vol_present)
+        display_damage(d, clock_tray(d));
+}
+
+static void vol_set(display_t *d, int percent, int mute) {
+    if (percent < 0)   percent = 0;
+    if (percent > 100) percent = 100;
+    if (percent == vol_percent && mute == vol_mute)
+        return;
+
+    vol_percent = percent;
+    vol_mute    = mute;
+    volume_write(percent, mute);
+    vol_damage(d);
+}
+
+static void vol_set_at(display_t *d, int y) {
+    rect_t track = vol_track(d);
+    int    span  = track.h - VOL_THUMB_H;
+    int    from  = y - track.y - VOL_THUMB_H / 2;
+    if (from < 0)    from = 0;
+    if (from > span) from = span;
+    vol_set(d, 100 - (from * 100 + span / 2) / span, vol_mute);
+}
+
+static void vol_set_open(display_t *d, int open) {
+    if (open == vol_open)
+        return;
+    if (vol_open)
+        display_damage(d, vol_rect(d));
+    vol_open     = open;
+    vol_dragging = 0;
+    if (open)
+        display_damage(d, vol_rect(d));
 }
 
 // the memory tip has that corner if its up
@@ -578,6 +682,30 @@ static void batt_update(display_t *d) {
     snprintf(batt_text, sizeof(batt_text), "%d%%", batt_percent);
     snprintf(batt_tip, sizeof(batt_tip), "%d%% %s", batt_percent,
              batt_charging ? "Charging" : batt_percent <= BATT_LOW_PERCENT ? "Low Battery" : "remaining");
+    batt_tip_damage(d);
+}
+
+static void vol_update(display_t *d) {
+    if (vol_dragging || (vol_checked && clock_now() - vol_checked < VOL_CHECK_FS))
+        return;
+    vol_checked = clock_now();
+
+    int percent = 0, mute = 0;
+    int present = volume_read(&percent, &mute);
+    if (present == vol_present && percent == vol_percent && mute == vol_mute)
+        return;
+
+    // the tray is a different width when the speaker comes or goes
+    batt_tip_damage(d);
+    vol_damage(d);
+    if (present != vol_present)
+        display_damage(d, taskbar_rect(d));
+    vol_present = present;
+    vol_percent = percent;
+    vol_mute    = mute;
+    if (!present)
+        vol_set_open(d, 0);
+    vol_damage(d);
     batt_tip_damage(d);
 }
 
@@ -749,6 +877,7 @@ void taskbar_update(display_t *d) {
     int changed = 0;
 
     mem_update(d);
+    vol_update(d);
     batt_update(d);
 
     char now[32];
@@ -947,12 +1076,89 @@ static void ctx_draw(display_t *d, rect_t clip) {
     }
 }
 
+static void speaker_draw(display_t *d, rect_t clip, rect_t icon) {
+    int x = icon.x;
+    int y = icon.y + (icon.h - VOL_ICON_H) / 2;
+
+    display_fill(d, rect_clip((rect_t){x + 1, y + 6, 3, 5}, clip), COLOUR_TEXT);
+    for (int c = 0; c < 5; c++)
+        display_fill(d, rect_clip((rect_t){x + 4 + c, y + 6 - c, 1, 5 + c * 2}, clip), COLOUR_TEXT);
+
+    if (vol_mute) {
+        for (int i = 0; i < 5; i++) {
+            display_fill(d, rect_clip((rect_t){x + 10 + i, y + 6 + i, 2, 1}, clip), COLOUR_LOW);
+            display_fill(d, rect_clip((rect_t){x + 10 + i, y + 10 - i, 2, 1}, clip), COLOUR_LOW);
+        }
+        return;
+    }
+
+    int waves = vol_percent == 0 ? 0 : vol_percent < 34 ? 1 : vol_percent < 67 ? 2 : 3;
+    for (int k = 0; k < waves; k++) {
+        int wx   = x + 10 + k * 3;
+        int half = 1 + k * 2;
+        display_fill(d, rect_clip((rect_t){wx + 1, y + 8 - half, 1, half * 2 + 1}, clip), COLOUR_TEXT);
+        display_fill(d, rect_clip((rect_t){wx, y + 8 - half - 1, 1, 1}, clip), COLOUR_TEXT);
+        display_fill(d, rect_clip((rect_t){wx, y + 8 + half + 1, 1, 1}, clip), COLOUR_TEXT);
+    }
+}
+
+static void checkbox_draw(display_t *d, rect_t clip, rect_t box, int checked) {
+    display_fill(d, rect_clip(rect_shrink(box, 2), clip), COLOUR_DKSHADOW);
+    display_sunken(d, clip, box);
+    if (!checked)
+        return;
+
+    for (int i = 0; i < 3; i++)
+        display_fill(d, rect_clip((rect_t){box.x + 3 + i, box.y + 5 + i, 1, 3}, clip), COLOUR_TEXT);
+    for (int i = 0; i < 4; i++)
+        display_fill(d, rect_clip((rect_t){box.x + 6 + i, box.y + 6 - i, 1, 3}, clip), COLOUR_TEXT);
+}
+
+static void vol_draw(display_t *d, rect_t clip) {
+    rect_t r = vol_rect(d);
+    if (!rect_overlaps(r, clip))
+        return;
+
+    display_raised(d, clip, r);
+    rect_t inside = rect_clip(rect_shrink(r, 2), clip);
+
+    font_draw(d, inside, &font_ui, r.x + (r.w - font_text_width(&font_ui, VOL_LABEL)) / 2, r.y + VOL_PAD,
+              VOL_LABEL, COLOUR_TEXT);
+
+    // the groove the thumb runs in
+    rect_t track   = vol_track(d);
+    int    cx      = track.x + track.w / 2;
+    rect_t channel = {cx - 2, track.y, 4, track.h};
+    display_sunken(d, clip, channel);
+
+    int span = track.h - VOL_THUMB_H;
+    for (int i = 0; i < VOL_TICKS; i++) {
+        int ty = track.y + VOL_THUMB_H / 2 + i * span / (VOL_TICKS - 1);
+        int w  = (i == 0 || i == VOL_TICKS - 1 || i == VOL_TICKS / 2) ? VOL_TICK_W + 2 : VOL_TICK_W;
+        display_fill(d, rect_clip((rect_t){track.x - VOL_TICK_GAP - w, ty, w, 1}, clip), COLOUR_BACK_TEXT);
+        display_fill(d, rect_clip((rect_t){track.x + track.w + VOL_TICK_GAP, ty, w, 1}, clip), COLOUR_BACK_TEXT);
+    }
+    display_button(d, clip, vol_thumb(d), 0, vol_dragging);
+
+    char text[8];
+    snprintf(text, sizeof(text), "%d%%", vol_percent);
+    font_draw_digits(d, inside, &font_ui, r.x + (r.w - font_digits_width(&font_ui, text)) / 2,
+                     track.y + track.h + VOL_PAD, text, vol_mute ? COLOUR_BACK_TEXT : COLOUR_TEXT);
+
+    rect_t mute = vol_mute_rect(d);
+    checkbox_draw(d, clip, (rect_t){mute.x, mute.y, VOL_BOX, VOL_BOX}, vol_mute);
+    font_draw(d, inside, &font_ui, mute.x + VOL_BOX + 4, mute.y + (VOL_BOX - font_height(&font_ui)) / 2,
+              VOL_MUTE, COLOUR_TEXT);
+}
+
 void taskbar_draw(display_t *d, rect_t clip) {
     // the parts of the bar that arent on the bar, they go over whatever windows are there
     if (menu_open)
         menu_draw(d, clip);
     if (ctx_open)
         ctx_draw(d, clip);
+    if (vol_open)
+        vol_draw(d, clip);
     if (tip_shown())
         tip_draw(d, clip);
     if (batt_tip_shown())
@@ -1037,6 +1243,10 @@ void taskbar_draw(display_t *d, rect_t clip) {
         warn_draw(d, clip, warn_icon(d));
         text_x += WARN_W + WARN_GAP;
     }
+    if (vol_present) {
+        speaker_draw(d, clip, vol_icon_rect(d));
+        text_x += VOL_ICON_W + VOL_GAP;
+    }
     if (batt_present) {
         font_draw(d, rect_clip(tray, clip), &font_ui, text_x, tray.y + (tray.h - font_height(&font_ui)) / 2,
                   batt_text, batt_percent <= BATT_LOW_PERCENT ? COLOUR_LOW : COLOUR_TEXT);
@@ -1113,6 +1323,48 @@ int taskbar_mouse(display_t *d, int x, int y, uint8_t buttons, uint8_t was_butto
 
     if (on_warn && left && !was_left && held == SLOT_NONE) {
         tip_set(d, tip_hover, !tip_pinned);
+        return 1;
+    }
+
+    int on_speaker = vol_present && rect_contains(vol_icon_rect(d), x, y);
+    if (vol_open) {
+        rect_t pop = vol_rect(d);
+        if (vol_dragging) {
+            vol_set_at(d, y);
+            if (!left) {
+                vol_dragging = 0;
+                display_damage(d, pop);
+            }
+            return 1;
+        }
+
+        if (left && !was_left) {
+            rect_t track = vol_track(d);
+            // the thumbs whole column counts, not just the thin groove
+            if (rect_contains((rect_t){track.x, track.y, track.w, track.h}, x, y)) {
+                vol_dragging = 1;
+                vol_set_at(d, y);
+                display_damage(d, pop);
+                return 1;
+            }
+            if (rect_contains(vol_mute_rect(d), x, y)) {
+                vol_set(d, vol_percent, !vol_mute);
+                return 1;
+            }
+            if (rect_contains(pop, x, y))
+                return 1;
+
+            vol_set_open(d, 0);
+            if (on_speaker)
+                return 1;
+        } else if (rect_contains(pop, x, y)) {
+            return 1;
+        }
+    } else if (on_speaker && left && !was_left && held == SLOT_NONE) {
+        menu_set(d, 0);
+        if (ctx_open)
+            ctx_set(d, CTX_NONE, 0, 0, 0);
+        vol_set_open(d, 1);
         return 1;
     }
 
@@ -1234,5 +1486,16 @@ int taskbar_mouse(display_t *d, int x, int y, uint8_t buttons, uint8_t was_butto
                 window_raise(d, win);
         }
     }
+    return 1;
+}
+
+int taskbar_wheel(display_t *d, int x, int y, int wheel) {
+    if (!vol_present)
+        return 0;
+    int over = rect_contains(vol_icon_rect(d), x, y) || (vol_open && rect_contains(vol_rect(d), x, y));
+    if (!over)
+        return 0;
+
+    vol_set(d, vol_percent + wheel * VOL_STEP, vol_mute);
     return 1;
 }
