@@ -16,3 +16,4 @@ const icon_t *icon_default(int px);
 const icon_t *icon_for_path(const char *path, int px);
 
 const icon_t *icon_for_task(uint64_t pid, int px);
+const icon_t *icon_device(int px);

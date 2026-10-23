@@ -19,6 +19,8 @@
 #include <dialog.h>
 #include <notify.h>
 #include <volume.h>
+#include <drives.h>
+#include <errno.h>
 
 #define BUTTON_TOP      4
 #define BUTTON_H        30
@@ -58,12 +60,20 @@
 #define VOL_LABEL       "Volume"
 #define VOL_MUTE        "Mute"
 
+#define DRIVE_ICON_PX   16
+#define DRIVE_W         16
+#define DRIVE_GAP       6
+#define DRIVES_CHECK_FS (1000 * FS_PER_MS)
+
 #define TIP_PAD         8
 #define TIP_GAP         4       // between the tip and the top of the bar
 
 #define SLOT_NONE       (-1)
 #define SLOT_START      (-2)    // the start button, as far as held is concerned
 #define SLOT_PIN(i)     (-3 - (i))  // and the pinned ones after it
+#define SLOT_DRIVE(i)   (-40 - (i)) // then the sticks in the tray, well past where the pins end
+#define SLOT_IS_PIN(s)  ((s) <= SLOT_PIN(0) && (s) > SLOT_PIN(PINS_MAX))
+#define SLOT_IS_DRIVE(s) ((s) <= SLOT_DRIVE(0) && (s) > SLOT_DRIVE(DRIVES_MAX))
 
 
 #define PIN_W           BUTTON_H
@@ -97,9 +107,10 @@ static const char *power_icons[MENU_POWER_ITEMS]  = { "O", "X" };
 static const char *power_labels[MENU_POWER_ITEMS] = { "Restart", "Shutdown" };
 
 // what was right clicked, which says what the menu has in it
-enum { CTX_NONE, CTX_START, CTX_TASK, CTX_PIN, CTX_MENU };
-enum { ACT_ABOUT, ACT_OPEN, ACT_PIN, ACT_UNPIN, ACT_CLOSE, ACT_KILL };
-static const char *act_labels[] = { "About Bleed", "Open", "Pin to taskbar", "Unpin from taskbar", "Close", "Kill Task" };
+enum { CTX_NONE, CTX_START, CTX_TASK, CTX_PIN, CTX_MENU, CTX_DRIVE };
+enum { ACT_ABOUT, ACT_OPEN, ACT_PIN, ACT_UNPIN, ACT_CLOSE, ACT_KILL, ACT_EJECT };
+static const char *act_labels[] = { "About Bleed", "Open", "Pin to taskbar", "Unpin from taskbar", "Close", "Kill Task",
+                                    "Eject" };
 
 static app_t pins[PINS_MAX];
 static int   pins_count;
@@ -141,6 +152,11 @@ static int      vol_mute;
 static uint64_t vol_checked;
 static int      vol_open;
 static int      vol_dragging;
+
+static drive_t  drives[DRIVES_MAX];
+static int      drives_count;
+static uint64_t drives_checked;
+static char     ctx_drive[16];      // the stick the menu is for, by name since the list can change under it
 
 static int      hot_slot = SLOT_NONE;   // the button the pointer is on, lit up
 static int      hover_slot = SLOT_NONE; // the pin or task button the pointer is resting on
@@ -272,6 +288,12 @@ static void ctx_set(display_t *d, int open, int target, int x, int y) {
         case CTX_MENU:
             if (apps_index(target))
                 ctx_add(pin_find(apps_index(target)->path) < 0 ? ACT_PIN : ACT_UNPIN);
+            break;
+        case CTX_DRIVE:
+            if (target >= 0 && target < drives_count)
+                strcpy(ctx_drive, drives[target].dev);
+            ctx_add(ACT_OPEN);
+            ctx_add(ACT_EJECT);
             break;
     }
 
@@ -421,6 +443,8 @@ static void ctx_pin(display_t *d, int act, int kind, int target) {
         pin_remove(d, pin_find(pin.path));
 }
 
+static void drive_act(display_t *d, int act, const char *dev);
+
 static void ctx_run(display_t *d, int item) {
     int act    = ctx_acts[item];
     int kind   = ctx_open;
@@ -431,7 +455,9 @@ static void ctx_run(display_t *d, int item) {
     window_t *win = kind == CTX_TASK ? window_find((uint32_t)target) : NULL;
 
     if (act == ACT_ABOUT) program_run(ABOUT_PATH);
-    if (act == ACT_OPEN)  pin_run(d, target);
+    if (act == ACT_OPEN && kind == CTX_PIN) pin_run(d, target);
+    if (kind == CTX_DRIVE)
+        drive_act(d, act, ctx_drive);
     if (act == ACT_PIN || act == ACT_UNPIN)
         ctx_pin(d, act, kind, target);
     if (act == ACT_CLOSE && win) {
@@ -477,6 +503,7 @@ static rect_t clock_tray(const display_t *d) {
     int    w   = font_digits_width(&font_ui, clock_text) + CLOCK_PAD * 2;
     if (mem_warn)
         w += WARN_W + WARN_GAP;
+    w += drives_count * (DRIVE_W + DRIVE_GAP);
     if (vol_present)
         w += VOL_ICON_W + VOL_GAP;
     if (batt_present)
@@ -494,16 +521,24 @@ static int tip_shown(void) {
     return mem_warn && (tip_hover || tip_pinned);
 }
 
+// the sticks come first in the tray, straight after the warning if theres one
+static rect_t drive_rect(const display_t *d, int index) {
+    rect_t tray = clock_tray(d);
+    int    x    = tray.x + CLOCK_PAD + (mem_warn ? WARN_W + WARN_GAP : 0) + index * (DRIVE_W + DRIVE_GAP);
+    return (rect_t){x, tray.y, DRIVE_W, tray.h};
+}
+
 static rect_t vol_icon_rect(const display_t *d) {
     rect_t tray = clock_tray(d);
-    int    x    = tray.x + CLOCK_PAD + (mem_warn ? WARN_W + WARN_GAP : 0);
+    int    x    = tray.x + CLOCK_PAD + (mem_warn ? WARN_W + WARN_GAP : 0) + drives_count * (DRIVE_W + DRIVE_GAP);
     return (rect_t){x, tray.y, VOL_ICON_W, tray.h};
 }
 
 // inside the tray, left of the divider. the whole height of it so its not fiddly to point at
 static rect_t batt_rect(const display_t *d) {
     rect_t tray = clock_tray(d);
-    int    x    = tray.x + CLOCK_PAD + (mem_warn ? WARN_W + WARN_GAP : 0) + (vol_present ? VOL_ICON_W + VOL_GAP : 0);
+    int    x    = tray.x + CLOCK_PAD + (mem_warn ? WARN_W + WARN_GAP : 0) + drives_count * (DRIVE_W + DRIVE_GAP) +
+                  (vol_present ? VOL_ICON_W + VOL_GAP : 0);
     return (rect_t){x, tray.y, font_text_width(&font_ui, batt_text), tray.h};
 }
 
@@ -708,6 +743,77 @@ static void vol_update(display_t *d) {
     batt_tip_damage(d);
 }
 
+static void drives_update(display_t *d) {
+    if (drives_checked && clock_now() - drives_checked < DRIVES_CHECK_FS)
+        return;
+    drives_checked = clock_now();
+
+    drive_t now[DRIVES_MAX];
+    int     count = drives_read(now, DRIVES_MAX);
+    if (count == drives_count && memcmp(now, drives, (size_t)count * sizeof(drive_t)) == 0)
+        return;
+
+    batt_tip_damage(d);
+    display_damage(d, taskbar_rect(d));
+    memcpy(drives, now, sizeof(now));
+    drives_count = count;
+    batt_tip_damage(d);
+}
+
+static int drive_find(const char *dev) {
+    for (int i = 0; i < drives_count; i++) {
+        if (strcmp(drives[i].dev, dev) == 0)
+            return i;
+    }
+    return -1;
+}
+
+static void drive_open(display_t *d, int index) {
+    if (index < 0 || index >= drives_count)
+        return;
+    if (!drives[index].mount[0]) {
+        notify_post(d, drives[index].name, "It isnt mounted, Bleed cant read whats on it.");
+        return;
+    }
+
+    char  mount[sizeof(drives[index].mount)];
+    char  program[] = "cabinet";
+    strcpy(mount, drives[index].mount);
+    char *argv[]    = { program, mount, NULL };
+    if (app_run(d, argv) != 0)
+        notify_post(d, "Cabinet", "Cabinet isnt installed, theres nothing to open it with.");
+}
+
+static void drive_eject_run(display_t *d, const char *dev) {
+    int index = drive_find(dev);
+    if (index < 0)
+        return;
+
+    char name[sizeof(drives[index].name)];
+    char text[96];
+    strcpy(name, drives[index].name);
+
+    int r = drive_eject(dev);
+    if (r == 0) {
+        snprintf(text, sizeof(text), "%s can be unplugged now.", name);
+        notify_post(d, "Safe to remove", text);
+    } else if (r == -EBUSY) {
+        snprintf(text, sizeof(text), "Something still has files open on %s.", name);
+        notify_post(d, "Cant eject", text);
+    } else {
+        notify_post(d, "Cant eject", "It didnt answer, try again or just pull it out.");
+    }
+
+    // gone from the tray straight away, not on the next look
+    drives_checked = 0;
+    drives_update(d);
+}
+
+static void drive_act(display_t *d, int act, const char *dev) {
+    if (act == ACT_OPEN)  drive_open(d, drive_find(dev));
+    if (act == ACT_EJECT) drive_eject_run(d, dev);
+}
+
 static void batt_hover_set(display_t *d, int hover) {
     batt_tip_damage(d);
     batt_hover = hover;
@@ -814,9 +920,17 @@ static void hover_show(display_t *d) {
     int       pin = SLOT_PIN(0) - hover_slot;
     rect_t    button;
 
-    if (hover_slot <= SLOT_PIN(0) && pin < pins_count) {
+    int       drive = SLOT_DRIVE(0) - hover_slot;
+
+    if (SLOT_IS_PIN(hover_slot) && pin < pins_count) {
         strcpy(hover_text, pins[pin].name);
         button = pin_button(d, pin);
+    } else if (SLOT_IS_DRIVE(hover_slot) && drive < drives_count) {
+        if (drives[drive].mount[0])
+            snprintf(hover_text, sizeof(hover_text), "%s (%s)", drives[drive].name, drives[drive].mount);
+        else
+            snprintf(hover_text, sizeof(hover_text), "%s", drives[drive].name);
+        button = drive_rect(d, drive);
     } else if (win) {
         strcpy(hover_text, win->title);
         button = task_button(d, win);
@@ -878,6 +992,7 @@ void taskbar_update(display_t *d) {
     mem_update(d);
     vol_update(d);
     batt_update(d);
+    drives_update(d);
 
     char now[32];
     clock_read(now);
@@ -920,6 +1035,8 @@ void taskbar_update(display_t *d) {
 
     // a held task button whose window went away has nothing left to do on release
     if (held >= 0 && !window_in_slot(held))
+        held = SLOT_NONE;
+    if (SLOT_IS_DRIVE(held) && SLOT_DRIVE(0) - held >= drives_count)
         held = SLOT_NONE;
 
     // the buttons have moved, a name thats up could be over the wrong one
@@ -1242,6 +1359,18 @@ void taskbar_draw(display_t *d, rect_t clip) {
         warn_draw(d, clip, warn_icon(d));
         text_x += WARN_W + WARN_GAP;
     }
+    // cabinets device chip
+    const icon_t *chip = drives_count ? icon_device(DRIVE_ICON_PX) : NULL;
+    if (drives_count && !chip)
+        chip = icon_default(DRIVE_ICON_PX);
+    for (int i = 0; i < drives_count; i++) {
+        rect_t r    = drive_rect(d, i);
+        int    down = held == SLOT_DRIVE(i) && held_over;
+        if (chip)
+            display_blend(d, rect_clip(tray, clip), r.x + (r.w - chip->w) / 2 + down,
+                          r.y + (r.h - chip->h) / 2 + down, chip->pixels, chip->w, chip->h);
+        text_x += DRIVE_W + DRIVE_GAP;
+    }
     if (vol_present) {
         speaker_draw(d, clip, vol_icon_rect(d));
         text_x += VOL_ICON_W + VOL_GAP;
@@ -1270,6 +1399,10 @@ static int button_at(const display_t *d, int x, int y) {
         if (rect_contains(pin_button(d, i), x, y))
             return SLOT_PIN(i);
     }
+    for (int i = 0; i < drives_count; i++) {
+        if (rect_contains(drive_rect(d, i), x, y))
+            return SLOT_DRIVE(i);
+    }
 
     window_t *win = task_at(d, x, y);
     return win ? win->slot : SLOT_NONE;
@@ -1278,8 +1411,10 @@ static int button_at(const display_t *d, int x, int y) {
 static rect_t slot_rect(const display_t *d, int slot) {
     if (slot == SLOT_START)
         return start_button(d);
-    if (slot <= SLOT_PIN(0))
+    if (SLOT_IS_PIN(slot))
         return pin_button(d, SLOT_PIN(0) - slot);
+    if (SLOT_IS_DRIVE(slot))
+        return drive_rect(d, SLOT_DRIVE(0) - slot);
     window_t *win = window_in_slot(slot);
     return win ? task_button(d, win) : (rect_t){0, 0, 0, 0};
 }
@@ -1399,11 +1534,13 @@ int taskbar_mouse(display_t *d, int x, int y, uint8_t buttons, uint8_t was_butto
         int       slot = button_at(d, x, by);
         window_t *win  = slot >= 0 ? window_in_slot(slot) : NULL;
 
-        if (slot == SLOT_START || win || slot <= SLOT_PIN(0)) {
+        if (slot == SLOT_START || win || SLOT_IS_PIN(slot) || SLOT_IS_DRIVE(slot)) {
             menu_set(d, 0);
-            if (slot == SLOT_START) ctx_set(d, CTX_START, 0, x, d->height);
-            if (win)                ctx_set(d, CTX_TASK, (int)win->id, x, d->height);
-            if (slot <= SLOT_PIN(0)) ctx_set(d, CTX_PIN, SLOT_PIN(0) - slot, x, d->height);
+            vol_set_open(d, 0);
+            if (slot == SLOT_START)    ctx_set(d, CTX_START, 0, x, d->height);
+            if (win)                   ctx_set(d, CTX_TASK, (int)win->id, x, d->height);
+            if (SLOT_IS_PIN(slot))     ctx_set(d, CTX_PIN, SLOT_PIN(0) - slot, x, d->height);
+            if (SLOT_IS_DRIVE(slot))   ctx_set(d, CTX_DRIVE, SLOT_DRIVE(0) - slot, x, d->height);
             return 1;
         }
     }
@@ -1472,8 +1609,10 @@ int taskbar_mouse(display_t *d, int x, int y, uint8_t buttons, uint8_t was_butto
         // only counts if it comes back up on the same button
         if (over && pressed == SLOT_START)
             menu_set(d, !menu_open);
-        if (over && pressed <= SLOT_PIN(0))
+        if (over && SLOT_IS_PIN(pressed))
             pin_run(d, SLOT_PIN(0) - pressed);
+        if (over && SLOT_IS_DRIVE(pressed))
+            drive_open(d, SLOT_DRIVE(0) - pressed);
         if (over && pressed >= 0) {
             // the same as 9x: brings it up, or puts it away if its the one already in front
             window_t *win = window_in_slot(pressed);

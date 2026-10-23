@@ -10,6 +10,9 @@
 #define ICON_PATH_MAX   256
 #define ICON_NAME_MAX   32
 
+#define CABINET_PATH    "/initrd/bin/cabinet"
+#define CABINET_DEVICE  ".bleed.cab.device"
+
 typedef struct {
     char        path[ICON_PATH_MAX];
     const char *base;
@@ -159,4 +162,8 @@ const icon_t *icon_for_task(uint64_t pid, int px) {
     if (task_path(pid, path, sizeof(path)) != 0)
         return icon_default(px);
     return icon_for_path(path, px);
+}
+
+const icon_t *icon_device(int px) {
+    return icon_cached(CABINET_PATH, CABINET_DEVICE, px);
 }
