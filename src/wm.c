@@ -617,6 +617,12 @@ void wm_mouse(display_t *d, int x, int y, uint8_t buttons) {
             win = NULL;
     }
 
+    if (win && buttons != was) {
+        send_mouse(d, win, x, y, buttons);
+        motion_for = NULL;
+        return;
+    }
+
     motion_for = win;
     motion_x   = x;
     motion_y   = y;

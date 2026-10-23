@@ -39,7 +39,24 @@ int cs_terminal_open(const char *cwd) {
 
     cs_msg_t msg = { .type = CS_REQ_TERMINAL };
     strncpy(msg.title, cwd ? cwd : "", CS_TITLE_MAX - 1);
+    strncpy(msg.text, cwd ? cwd : "", CS_TEXT_MAX - 1);
     return cs_msg_send(server_pid, &msg);
+}
+
+int cs_run(const char *const argv[]) {
+    if (!server_pid && cs_connect() < 0)
+        return -1;
+
+    cs_msg_t msg = { .type = CS_REQ_RUN };
+    size_t   at  = 0;
+    for (int i = 0; argv[i]; i++) {
+        size_t len = strlen(argv[i]) + 1;
+        if (at + len >= CS_TEXT_MAX)
+            return -1;
+        memcpy(msg.text + at, argv[i], len);
+        at += len;
+    }
+    return at ? cs_msg_send(server_pid, &msg) : -1;
 }
 
 static void window_rebuffer(const cs_msg_t *msg) {
@@ -153,6 +170,12 @@ void cs_window_commit(cs_window_t *win, int x, int y, int w, int h) {
 
 void cs_window_move(cs_window_t *win, int x, int y) {
     cs_msg_t msg = { .type = CS_REQ_MOVE, .window = win->id, .x = x, .y = y };
+    cs_msg_send(server_pid, &msg);
+}
+
+void cs_window_title(cs_window_t *win, const char *title) {
+    cs_msg_t msg = { .type = CS_REQ_TITLE, .window = win->id };
+    strncpy(msg.title, title, CS_TITLE_MAX - 1);
     cs_msg_send(server_pid, &msg);
 }
 

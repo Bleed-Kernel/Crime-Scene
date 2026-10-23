@@ -6,9 +6,13 @@ typedef struct icon {
     int       w, h;
 } icon_t;
 
-// the 16px icon built into the program at path, NULL if none
-const icon_t *icon_for_path(const char *path);
+// the programs own icon at px (shrunk from a bigger one if it has to be), NULL if it hasnt got one
+const icon_t *icon_find(const char *path, int px);
 
-const icon_t *icon_for_path_res(const char *path, const char *res);
+// the desktops standard icon for programs without one
+const icon_t *icon_default(int px);
 
-const icon_t *icon_for_task(uint64_t pid);
+// icon_find, or the standard one if the program has none
+const icon_t *icon_for_path(const char *path, int px);
+
+const icon_t *icon_for_task(uint64_t pid, int px);

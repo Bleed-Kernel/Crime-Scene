@@ -74,7 +74,6 @@
 #define MENU_W          190
 #define MENU_BANNER_W   26
 #define MENU_ITEM_H     28
-#define MENU_SPARE      3
 #define MENU_SEP_H      8
 #define MENU_ICON_W     30
 #define MENU_POWER_ITEMS 2      // restart and shutdown, under the programs
@@ -176,15 +175,15 @@ static int menu_items(void) {
 // straight up from the start button, standing on the bar
 static rect_t menu_rect(const display_t *d) {
     rect_t bar = taskbar_rect(d);
-    int    h   = (menu_items() + MENU_SPARE) * MENU_ITEM_H + MENU_SEP_H + 6;
+    int    h   = menu_items() * MENU_ITEM_H + MENU_SEP_H + 6;
     return (rect_t){bar.x, bar.y - h, MENU_W, h};
 }
 
 static rect_t menu_item(const display_t *d, int item) {
     rect_t menu = menu_rect(d);
-    // the programs at the top, then the empty rows and the groove, then the power ones at the bottom
+    // the programs at the top, then the groove, then the power ones at the bottom
     int    y    = menu.y + 3 + item * MENU_ITEM_H +
-                  (item >= menu_power() ? MENU_SPARE * MENU_ITEM_H + MENU_SEP_H : 0);
+                  (item >= menu_power() ? MENU_SEP_H : 0);
     return (rect_t){menu.x + 3 + MENU_BANNER_W, y, menu.w - 6 - MENU_BANNER_W, MENU_ITEM_H};
 }
 

@@ -271,7 +271,7 @@ window_t *window_open(display_t *d, uint64_t owner, int w, int h, const char *ti
 
     strncpy(win->title, title, CS_TITLE_MAX - 1);
     win->title[CS_TITLE_MAX - 1] = '\0';
-    win->icon = icon_for_task(owner);
+    win->icon = icon_for_task(owner, 16);
 
     // the old top one loses the focus, its title bar has to change
     if (window_top())

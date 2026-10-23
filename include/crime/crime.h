@@ -1,6 +1,7 @@
 #pragma once
 #include <stdint.h>
 #include <stddef.h>
+#include <poll.h>
 
 // everything a program needs of libcrime: what goes over the wire, the windows, and the
 // syscalls blibc doesnt have yet
@@ -9,6 +10,7 @@
 
 #define CS_PID_FILE  "/tmp/crime-scene.pid"
 #define CS_TITLE_MAX 64
+#define CS_TEXT_MAX  512
 
 #define CS_BUTTON_LEFT   (1 << 0)
 #define CS_BUTTON_RIGHT  (1 << 1)
@@ -22,7 +24,9 @@ enum {
     CS_REQ_MOVE,            // window, x y on the screen
     CS_REQ_POINTER_LOCK,    // window, x is 1 to take the pointer or 0 to give it back
     CS_REQ_RESIZE,          // window, w h it would like to be. the answer is a CS_EV_RESIZE
-    CS_REQ_TERMINAL,        // a new terminal with a shell in it, title is the directory it starts in
+    CS_REQ_TERMINAL,        // a new terminal with a shell in it, text (or title) is the directory it starts in
+    CS_REQ_TITLE,           // window, title
+    CS_REQ_RUN,             // text is the args, each with a nul after it. started like the run box does
 
     // server to client
     CS_EV_OPENED = 100,     // window (0 if it failed), shm, w, h, pitch
@@ -51,6 +55,7 @@ typedef struct {
     uint64_t shm;
     char     title[CS_TITLE_MAX];
     int32_t  wheel;
+    char     text[CS_TEXT_MAX];
 } cs_msg_t;
 
 // windows
@@ -76,6 +81,10 @@ int cs_connect(void);
 // the desktop is if thats NULL.
 int cs_terminal_open(const char *cwd);
 
+// have the desktop start argv[0] with the rest as its args, in a terminal if it wants one.
+// -1 if they dont fit in a message or theres no desktop
+int cs_run(const char *const argv[]);
+
 // the size the desktop gives a window that doesnt ask for one, a share of the screen
 #define CS_SIZE_DEFAULT 0
 
@@ -85,6 +94,7 @@ void cs_window_close(cs_window_t *win);
 // tell the desktop part of the window changed, nothing shows up until this
 void cs_window_commit(cs_window_t *win, int x, int y, int w, int h);
 void cs_window_move(cs_window_t *win, int x, int y);
+void cs_window_title(cs_window_t *win, const char *title);
 
 // ask for a different size. it happens when the CS_EV_RESIZE for it turns up, and it
 // doesnt happen at all while the window is maximised
@@ -100,10 +110,13 @@ int cs_event_wait(cs_event_t *ev, int timeout_ms);
 
 // resources
 
-// icons are elf sections with a png in each
+// icons are elf sections with a png in each. the master is any size and gets shrunk down,
+// the sized ones are optional hand drawn versions that win over it
+#define CS_RES_ICON     ".bleed.icon"
 #define CS_RES_ICON16   ".bleed.icon16"
 #define CS_RES_ICON32   ".bleed.icon32"
 #define CS_RES_ICON48   ".bleed.icon48"
+#define CS_RES_DEFAULT  ".bleed.default"    // the desktops icon for programs without one
 
 #define CS_RES_APP      ".bleed.app"
 uint8_t *cs_res_read(const char *path, const char *name, size_t *size);
@@ -112,23 +125,10 @@ uint8_t *cs_res_read(const char *path, const char *name, size_t *size);
 
 #define CS_PAGE_SIZE 4096UL
 
-#define POLLIN      0x0001
-#define POLLPRI     0x0002
-#define POLLOUT     0x0004
-#define POLLERR     0x0008
-#define POLLHUP     0x0010
-#define POLLNVAL    0x0020
-
+// a pollfd with this fd waits on the tasks ipc queue
 #define POLL_FD_IPC (-2)
 
-struct pollfd {
-    int   fd;
-    short events;
-    short revents;
-};
-
 // blibc doesnt have these yet
-long poll(struct pollfd *fds, unsigned long nfds, int timeout_ms);
 long shm_create(unsigned long pages);
 long shm_map(unsigned long id, size_t *pages_out);
 long shm_destroy(unsigned long id);

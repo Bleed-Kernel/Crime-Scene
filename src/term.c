@@ -499,7 +499,7 @@ static int term_start(display_t *d, char *const argv[], const char *title, const
         return -1;
     }
     // the desktop owns the window, its icon is the program running in it
-    t->win->icon = icon_for_path(path);
+    t->win->icon = icon_for_path(path, 16);
     t->path      = strdup(path);
 
     int pipefd[2] = { -1, -1 };

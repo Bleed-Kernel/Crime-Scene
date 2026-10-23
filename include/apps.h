@@ -5,6 +5,7 @@
 
 #define APPS_DIR        "/initrd/bin"
 #define APP_PATH_MAX    256
+#define RUN_ARGS_MAX    16
 
 typedef struct {
     char          path[APP_PATH_MAX];
@@ -25,5 +26,8 @@ const app_t *apps_index(int index);
 void app_start(display_t *d, const app_t *app);
 
 int  app_run_line(display_t *d, const char *line);
+
+// argv[0] is a path, or a name in APPS_DIR. 0 if theres a program there to start
+int  app_run(display_t *d, char *argv[]);
 
 void program_run(const char *path);

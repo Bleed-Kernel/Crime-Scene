@@ -9,7 +9,6 @@
 
 #define SHELL_PATH      "/initrd/bin/verdict"
 #define FD_SCAN         256
-#define RUN_ARGS_MAX    16
 
 static app_t *apps;
 static int    apps_len;
@@ -55,7 +54,7 @@ int app_info(const char *path, app_t *out) {
 
     memset(out, 0, sizeof(*out));
     strcpy(out->path, path);
-    out->icon = icon_for_path(path);
+    out->icon = icon_for_path(path, 16);
 
     const char *base = strrchr(path, '/');
     strncpy(out->name, base ? base + 1 : path, CS_TITLE_MAX - 1);
@@ -63,7 +62,7 @@ int app_info(const char *path, app_t *out) {
     size_t size;
     char  *text = (char *)cs_res_read(path, CS_RES_APP, &size);
     if (!text) {
-        out->terminal = !out->icon;
+        out->terminal = !icon_find(path, 16);
         return 0;
     }
 
@@ -184,6 +183,10 @@ int app_run_line(display_t *d, const char *line) {
     if (!argc)
         return -1;
 
+    return app_run(d, argv);
+}
+
+int app_run(display_t *d, char *argv[]) {
     char path[APP_PATH_MAX];
     if (strchr(argv[0], '/')) {
         strncpy(path, argv[0], sizeof(path) - 1);

@@ -9,6 +9,8 @@
 #include <wm.h>
 #include <term.h>
 #include <notify.h>
+#include <taskbar.h>
+#include <apps.h>
 #include <crime/crime.h>
 
 int server_init(void) {
@@ -175,8 +177,23 @@ void server_requests(display_t *d) {
             continue;
         }
         if (req.type == CS_REQ_TERMINAL) {
+            // text has room for a long path
             req.title[CS_TITLE_MAX - 1] = '\0';
-            term_open(d, req.title);
+            req.text[CS_TEXT_MAX - 1]   = '\0';
+            term_open(d, req.text[0] ? req.text : req.title);
+            continue;
+        }
+
+        // the args are back to back, an empty one (two nuls) is the end
+        if (req.type == CS_REQ_RUN) {
+            char *argv[RUN_ARGS_MAX + 1];
+            int   argc = 0;
+            req.text[CS_TEXT_MAX - 1] = '\0';
+            for (char *at = req.text; *at && argc < RUN_ARGS_MAX; at += strlen(at) + 1)
+                argv[argc++] = at;
+            argv[argc] = NULL;
+            if (argc)
+                app_run(d, argv);
             continue;
         }
 
@@ -207,6 +224,13 @@ void server_requests(display_t *d) {
                 } else {
                     server_resize(d, win, win->x, win->y, req.w, req.h);
                 }
+                break;
+            case CS_REQ_TITLE:
+                memcpy(win->title, req.title, CS_TITLE_MAX);
+                win->title[CS_TITLE_MAX - 1] = '\0';
+                if (!win->minimised)
+                    display_damage(d, window_titlebar(win));
+                display_damage(d, taskbar_rect(d));
                 break;
             // asking again after giving it up counts as a fresh ask, wm_tick does the rest
             case CS_REQ_POINTER_LOCK:

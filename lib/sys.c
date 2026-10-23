@@ -3,7 +3,6 @@
 #include <ipc.h>
 #include <crime/crime.h>
 
-#define SYS_POLL        7
 #define SYS_SHM_CREATE  522
 #define SYS_SHM_MAP     523
 #define SYS_SHM_DESTROY 524
@@ -20,10 +19,6 @@ static long syscall3(long number, long a, long b, long c) {
         : "rcx", "r11", "memory"
     );
     return ret;
-}
-
-long poll(struct pollfd *fds, unsigned long nfds, int timeout_ms) {
-    return syscall3(SYS_POLL, (long)fds, (long)nfds, timeout_ms);
 }
 
 long shm_create(unsigned long pages) {

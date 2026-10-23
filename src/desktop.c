@@ -22,7 +22,7 @@
 
 typedef struct {
     app_t         app;
-    const icon_t *icon;     // the big one, or the small one if it hasnt got one
+    const icon_t *icon;
     int           x, y;     // top left of its cell
 } item_t;
 
@@ -40,6 +40,16 @@ static rect_t cell(int i) {
     return (rect_t){items[i].x, items[i].y, CELL_W, CELL_H};
 }
 
+static int grid_cols(display_t *d) {
+    int cols = (d->width - MARGIN * 2) / CELL_W;
+    return cols < 1 ? 1 : cols;
+}
+
+static int grid_rows(display_t *d) {
+    int rows = (d->height - TASKBAR_H - MARGIN * 2) / CELL_H;
+    return rows < 1 ? 1 : rows;
+}
+
 void desktop_init(display_t *d) {
     apps_scan();
     count = apps_count();
@@ -49,15 +59,10 @@ void desktop_init(display_t *d) {
         return;
     }
 
-    int rows = (d->height - TASKBAR_H - MARGIN * 2) / CELL_H;
-    if (rows < 1)
-        rows = 1;
-
+    int rows = grid_rows(d);
     for (int i = 0; i < count; i++) {
         items[i].app  = *apps_index(i);
-        items[i].icon = icon_for_path_res(items[i].app.path, CS_RES_ICON32);
-        if (!items[i].icon)
-            items[i].icon = items[i].app.icon;
+        items[i].icon = icon_for_path(items[i].app.path, 32);
         items[i].x = MARGIN + (i / rows) * CELL_W;
         items[i].y = MARGIN + (i % rows) * CELL_H;
     }
@@ -141,6 +146,36 @@ static void move_to(display_t *d, int i, int x, int y) {
     display_damage(d, cell(i));
 }
 
+static int taken(int i, int x, int y) {
+    for (int j = 0; j < count; j++) {
+        if (j != i && items[j].x == x && items[j].y == y)
+            return 1;
+    }
+    return 0;
+}
+
+static void snap(display_t *d, int i) {
+    int  best_x = items[i].x, best_y = items[i].y;
+    long best   = -1;
+
+    for (int c = 0; c < grid_cols(d); c++) {
+        for (int r = 0; r < grid_rows(d); r++) {
+            int x = MARGIN + c * CELL_W;
+            int y = MARGIN + r * CELL_H;
+            if (taken(i, x, y))
+                continue;
+
+            long dx = x - items[i].x, dy = y - items[i].y;
+            if (best < 0 || dx * dx + dy * dy < best) {
+                best   = dx * dx + dy * dy;
+                best_x = x;
+                best_y = y;
+            }
+        }
+    }
+    move_to(d, i, best_x, best_y);
+}
+
 int desktop_mouse(display_t *d, int x, int y, uint8_t buttons, uint8_t was_buttons) {
     int left     = buttons & MOUSE_BTN_LEFT;
     int was_left = was_buttons & MOUSE_BTN_LEFT;
@@ -166,6 +201,8 @@ int desktop_mouse(display_t *d, int x, int y, uint8_t buttons, uint8_t was_butto
                 clicked    = held;
                 clicked_at = now;
             }
+        } else {
+            snap(d, held);
         }
         held = -1;
         return 1;

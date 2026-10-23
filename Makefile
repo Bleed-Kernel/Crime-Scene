@@ -6,6 +6,7 @@ UNAME_M := $(shell uname -m)
 
 CC 	:= x86_64-elf-gcc
 AR 	:= x86_64-elf-ar
+OBJCOPY := $(shell command -v x86_64-elf-objcopy >/dev/null 2>&1 && echo x86_64-elf-objcopy || echo objcopy)
 
 ELF_BIN_DIR_64 = bin
 ELF_OBJ_DIR_64 = $(ELF_BIN_DIR_64)/obj
@@ -55,13 +56,19 @@ $(LIBCRIME): blibc $(LIB_OBJS_64)
 	@mkdir -p $(ELF_BIN_DIR_64)
 	$(AR) rcs $@ $(LIB_OBJS_64)
 
-$(ELF_TARGET_64): blibc $(ELF_OBJS_64) $(LIBCRIME)
+# the icon programs without their own get, same layout as a programs res/icon*.png
+$(ELF_TARGET_64): blibc $(ELF_OBJS_64) $(LIBCRIME) $(wildcard res/default*.png)
 	$(CC) $(LDFLAGS) \
 		-o $(ELF_BIN_DIR_64)/$(ELF_TARGET_64) \
 		$(CRT0) \
 		$(ELF_OBJS_64) \
 		$(LIBCRIME) \
 		$(LIBC)
+	@for f in res/default*.png; do \
+		[ -f $$f ] || continue; \
+		s=.bleed.$$(basename $$f .png | tr -d -); \
+		$(OBJCOPY) --add-section $$s=$$f --set-section-flags $$s=noload,readonly $(ELF_BIN_DIR_64)/$(ELF_TARGET_64) || exit 1; \
+	done
 
 # -MMD writes out which headers each file used, so changing a header rebuilds everything
 # that includes it. without that a struct can change under an object file thats never rebuilt
