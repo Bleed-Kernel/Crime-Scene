@@ -121,6 +121,12 @@ int cs_event_wait(cs_event_t *ev, int timeout_ms);
 #define CS_RES_APP      ".bleed.app"
 uint8_t *cs_res_read(const char *path, const char *name, size_t *size);
 
+#define CS_DATA_DIR     "/mnt/data"
+
+// 1 if a file or folder called name is one the desktop leaves out of sight: dot files, and
+// what filesystems, tar and other systems leave lying about (lost+found, PaxHeader, __MACOSX..)
+int cs_name_hidden(const char *name);
+
 // syscalls
 
 #define CS_PAGE_SIZE 4096UL

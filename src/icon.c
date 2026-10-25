@@ -6,7 +6,6 @@
 #include <png.h>
 #include <crime/crime.h>
 
-#define ICON_CACHE      64
 #define ICON_PATH_MAX   256
 #define ICON_NAME_MAX   32
 
@@ -25,9 +24,11 @@ typedef struct {
 static const int sizes[] = { 16, 32, 48 };
 #define SIZES   (int)(sizeof(sizes) / sizeof(sizes[0]))
 
-// a miss is kept too, so a program with no icon isnt read again for every window it opens
-static cached_t cache[ICON_CACHE];
-static int      cached;
+// a miss is kept too, so a program with no icon isnt read again for every window it opens.
+// entries are allocated one at a time because callers keep pointers to the icons inside them
+static cached_t **cache;
+static int        cached;
+static int        cache_cap;
 
 static uint32_t *scale_down(const uint32_t *src, int sw, int sh, int dw, int dh) {
     uint32_t *out = malloc((size_t)dw * dh * sizeof(uint32_t));
@@ -124,15 +125,23 @@ static const icon_t *icon_cached(const char *path, const char *base, int px) {
         return NULL;
 
     for (int i = 0; i < cached; i++) {
-        if (cache[i].px == px && strcmp(cache[i].base, base) == 0 && strcmp(cache[i].path, path) == 0)
-            return cache[i].found ? &cache[i].icon : NULL;
+        if (cache[i]->px == px && strcmp(cache[i]->base, base) == 0 && strcmp(cache[i]->path, path) == 0)
+            return cache[i]->found ? &cache[i]->icon : NULL;
     }
 
-    // more programs than this is unlikely, any past it go without
-    if (cached == ICON_CACHE)
-        return NULL;
+    if (cached == cache_cap) {
+        int        cap    = cache_cap ? cache_cap * 2 : 64;
+        cached_t **bigger = realloc(cache, (size_t)cap * sizeof(cached_t *));
+        if (!bigger)
+            return NULL;
+        cache     = bigger;
+        cache_cap = cap;
+    }
 
-    cached_t *c = &cache[cached++];
+    cached_t *c = calloc(1, sizeof(cached_t));
+    if (!c)
+        return NULL;
+    cache[cached++] = c;
     strcpy(c->path, path);
     c->base  = base;
     c->px    = px;
