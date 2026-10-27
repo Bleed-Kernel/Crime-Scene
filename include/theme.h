@@ -37,5 +37,6 @@
 
 #define COLOUR_WARN         0xF5B301
 #define COLOUR_LOW          0xF2384A
+#define COLOUR_SCREEN       0x3C9BE0    // a lit monitor, the network icon
 
 #define COLOUR_TEXT         0xE8E8EA

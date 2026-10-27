@@ -167,6 +167,21 @@ static void request_open(display_t *d, uint64_t sender, const cs_msg_t *req) {
         window_drop(d, win);
 }
 
+// whatever window is under where it was let go gets it
+static void request_drop(display_t *d, window_t *from, cs_msg_t *req) {
+    int       x  = from->x + req->x, y = from->y + req->y;
+    window_t *to = window_at(x, y);
+    if (!to || to == from || to->minimised || !rect_contains(window_content(to), x, y))
+        return;
+
+    req->type   = CS_EV_DROP;
+    req->window = to->id;
+    req->x      = x - to->x;
+    req->y      = y - to->y;
+    req->text[CS_TEXT_MAX - 1] = '\0';
+    server_send(d, to, req);
+}
+
 void server_requests(display_t *d) {
     cs_msg_t req;
     uint64_t sender;
@@ -236,6 +251,9 @@ void server_requests(display_t *d) {
             case CS_REQ_POINTER_LOCK:
                 win->wants_lock  = req.x ? 1 : 0;
                 win->lock_broken = 0;
+                break;
+            case CS_REQ_DROP:
+                request_drop(d, win, &req);
                 break;
         }
     }

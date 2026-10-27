@@ -20,6 +20,7 @@
 #include <notify.h>
 #include <volume.h>
 #include <drives.h>
+#include <network.h>
 #include <errno.h>
 
 #define BUTTON_TOP      4
@@ -65,12 +66,18 @@
 #define DRIVE_GAP       6
 #define DRIVES_CHECK_FS (1000 * FS_PER_MS)
 
+#define NET_ICON_W      18
+#define NET_ICON_H      16
+#define NET_GAP         6
+#define NET_CHECK_FS    (2000 * FS_PER_MS)
+
 #define TIP_PAD         8
 #define TIP_GAP         4       // between the tip and the top of the bar
 
 #define SLOT_NONE       (-1)
 #define SLOT_START      (-2)    // the start button, as far as held is concerned
 #define SLOT_PIN(i)     (-3 - (i))  // and the pinned ones after it
+#define SLOT_NET        (-39)
 #define SLOT_DRIVE(i)   (-40 - (i)) // then the sticks in the tray, well past where the pins end
 #define SLOT_IS_PIN(s)  ((s) <= SLOT_PIN(0) && (s) > SLOT_PIN(PINS_MAX))
 #define SLOT_IS_DRIVE(s) ((s) <= SLOT_DRIVE(0) && (s) > SLOT_DRIVE(DRIVES_MAX))
@@ -157,6 +164,9 @@ static drive_t  drives[DRIVES_MAX];
 static int      drives_count;
 static uint64_t drives_checked;
 static char     ctx_drive[16];      // the stick the menu is for, by name since the list can change under it
+
+static struct net_device_info net;  // state NET_STATE_NONE hides the icon
+static uint64_t net_checked;
 
 static int      hot_slot = SLOT_NONE;   // the button the pointer is on, lit up
 static int      hover_slot = SLOT_NONE; // the pin or task button the pointer is resting on
@@ -504,6 +514,8 @@ static rect_t clock_tray(const display_t *d) {
     if (mem_warn)
         w += WARN_W + WARN_GAP;
     w += drives_count * (DRIVE_W + DRIVE_GAP);
+    if (net.state != NET_STATE_NONE)
+        w += NET_ICON_W + NET_GAP;
     if (vol_present)
         w += VOL_ICON_W + VOL_GAP;
     if (batt_present)
@@ -528,9 +540,21 @@ static rect_t drive_rect(const display_t *d, int index) {
     return (rect_t){x, tray.y, DRIVE_W, tray.h};
 }
 
-static rect_t vol_icon_rect(const display_t *d) {
+// after the sticks, before the speaker
+static rect_t net_rect(const display_t *d) {
     rect_t tray = clock_tray(d);
     int    x    = tray.x + CLOCK_PAD + (mem_warn ? WARN_W + WARN_GAP : 0) + drives_count * (DRIVE_W + DRIVE_GAP);
+    return (rect_t){x, tray.y, NET_ICON_W, tray.h};
+}
+
+static int net_w(void) {
+    return net.state != NET_STATE_NONE ? NET_ICON_W + NET_GAP : 0;
+}
+
+static rect_t vol_icon_rect(const display_t *d) {
+    rect_t tray = clock_tray(d);
+    int    x    = tray.x + CLOCK_PAD + (mem_warn ? WARN_W + WARN_GAP : 0) + drives_count * (DRIVE_W + DRIVE_GAP) +
+                  net_w();
     return (rect_t){x, tray.y, VOL_ICON_W, tray.h};
 }
 
@@ -538,7 +562,7 @@ static rect_t vol_icon_rect(const display_t *d) {
 static rect_t batt_rect(const display_t *d) {
     rect_t tray = clock_tray(d);
     int    x    = tray.x + CLOCK_PAD + (mem_warn ? WARN_W + WARN_GAP : 0) + drives_count * (DRIVE_W + DRIVE_GAP) +
-                  (vol_present ? VOL_ICON_W + VOL_GAP : 0);
+                  net_w() + (vol_present ? VOL_ICON_W + VOL_GAP : 0);
     return (rect_t){x, tray.y, font_text_width(&font_ui, batt_text), tray.h};
 }
 
@@ -743,6 +767,32 @@ static void vol_update(display_t *d) {
     batt_tip_damage(d);
 }
 
+static void hover_hide(display_t *d);
+static void hover_show(display_t *d);
+
+static void net_update(display_t *d) {
+    if (net_checked && clock_now() - net_checked < NET_CHECK_FS)
+        return;
+    net_checked = clock_now();
+
+    struct net_device_info now;
+    network_read(&now);
+    if (now.state == net.state && now.ip == net.ip)
+        return;
+
+    // the tray changes width when the icon comes or goes
+    batt_tip_damage(d);
+    display_damage(d, taskbar_rect(d));
+    net = now;
+    batt_tip_damage(d);
+
+    // a tip thats up says whatever it said before
+    if (hover_slot == SLOT_NET && hover_shown) {
+        hover_hide(d);
+        hover_show(d);
+    }
+}
+
 static void drives_update(display_t *d) {
     if (drives_checked && clock_now() - drives_checked < DRIVES_CHECK_FS)
         return;
@@ -909,6 +959,24 @@ static rect_t hover_tip_rect(const display_t *d, rect_t button) {
     return (rect_t){x, bar.y - TIP_GAP - h, w, h};
 }
 
+static const char *net_tip(void) {
+    static char text[64];
+    const uint8_t *ip = (const uint8_t *)&net.ip;
+
+    switch (net.state) {
+        case NET_STATE_UNPLUGGED:
+            return "Network cable unplugged";
+        case NET_STATE_CONNECTING:
+            return net.ip ? "Checking for internet access" : "Connecting";
+        case NET_STATE_NO_INTERNET:
+            snprintf(text, sizeof(text), "No internet access (%u.%u.%u.%u)", ip[0], ip[1], ip[2], ip[3]);
+            return text;
+        default:
+            snprintf(text, sizeof(text), "Internet access (%u.%u.%u.%u)", ip[0], ip[1], ip[2], ip[3]);
+            return text;
+    }
+}
+
 static void hover_hide(display_t *d) {
     if (hover_shown)
         display_damage(d, hover_rect);
@@ -925,6 +993,9 @@ static void hover_show(display_t *d) {
     if (SLOT_IS_PIN(hover_slot) && pin < pins_count) {
         strcpy(hover_text, pins[pin].name);
         button = pin_button(d, pin);
+    } else if (hover_slot == SLOT_NET && net.state != NET_STATE_NONE) {
+        snprintf(hover_text, sizeof(hover_text), "%s", net_tip());
+        button = net_rect(d);
     } else if (SLOT_IS_DRIVE(hover_slot) && drive < drives_count) {
         if (drives[drive].mount[0])
             snprintf(hover_text, sizeof(hover_text), "%s (%s)", drives[drive].name, drives[drive].mount);
@@ -993,6 +1064,7 @@ void taskbar_update(display_t *d) {
     vol_update(d);
     batt_update(d);
     drives_update(d);
+    net_update(d);
 
     char now[32];
     clock_read(now);
@@ -1218,6 +1290,36 @@ static void speaker_draw(display_t *d, rect_t clip, rect_t icon) {
     }
 }
 
+static void monitor_draw(display_t *d, rect_t clip, int x, int y, uint32_t screen) {
+    display_fill(d, rect_clip((rect_t){x, y, 11, 8}, clip), COLOUR_TEXT);
+    display_fill(d, rect_clip((rect_t){x + 1, y + 1, 9, 6}, clip), screen);
+    display_fill(d, rect_clip((rect_t){x + 4, y + 8, 3, 1}, clip), COLOUR_TEXT);
+    display_fill(d, rect_clip((rect_t){x + 2, y + 9, 7, 1}, clip), COLOUR_TEXT);
+}
+
+// the 9x pair of monitors
+static void net_draw(display_t *d, rect_t clip, rect_t icon) {
+    int      x      = icon.x;
+    int      y      = icon.y + (icon.h - NET_ICON_H) / 2;
+    int      lit    = net.state == NET_STATE_ONLINE || net.state == NET_STATE_NO_INTERNET;
+    uint32_t screen = lit ? COLOUR_SCREEN : COLOUR_SHADOW;
+
+    monitor_draw(d, clip, x + 7, y, screen);
+    monitor_draw(d, clip, x, y + 5, screen);
+
+    if (net.state == NET_STATE_UNPLUGGED) {
+        for (int i = 0; i < 5; i++) {
+            display_fill(d, rect_clip((rect_t){x + 12 + i, y + 10 + i, 2, 1}, clip), COLOUR_LOW);
+            display_fill(d, rect_clip((rect_t){x + 12 + i, y + 14 - i, 2, 1}, clip), COLOUR_LOW);
+        }
+    } else if (net.state == NET_STATE_NO_INTERNET) {
+        for (int row = 0; row < 6; row++)
+            display_fill(d, rect_clip((rect_t){x + 14 - row / 2, y + 10 + row, 1 + (row / 2) * 2, 1}, clip),
+                         COLOUR_WARN);
+        display_fill(d, rect_clip((rect_t){x + 14, y + 12, 1, 2}, clip), COLOUR_SHADOW);
+    }
+}
+
 static void checkbox_draw(display_t *d, rect_t clip, rect_t box, int checked) {
     display_fill(d, rect_clip(rect_shrink(box, 2), clip), COLOUR_DKSHADOW);
     display_sunken(d, clip, box);
@@ -1371,6 +1473,10 @@ void taskbar_draw(display_t *d, rect_t clip) {
                           r.y + (r.h - chip->h) / 2 + down, chip->pixels, chip->w, chip->h);
         text_x += DRIVE_W + DRIVE_GAP;
     }
+    if (net.state != NET_STATE_NONE) {
+        net_draw(d, clip, net_rect(d));
+        text_x += NET_ICON_W + NET_GAP;
+    }
     if (vol_present) {
         speaker_draw(d, clip, vol_icon_rect(d));
         text_x += VOL_ICON_W + VOL_GAP;
@@ -1403,6 +1509,8 @@ static int button_at(const display_t *d, int x, int y) {
         if (rect_contains(drive_rect(d, i), x, y))
             return SLOT_DRIVE(i);
     }
+    if (net.state != NET_STATE_NONE && rect_contains(net_rect(d), x, y))
+        return SLOT_NET;
 
     window_t *win = task_at(d, x, y);
     return win ? win->slot : SLOT_NONE;
@@ -1415,6 +1523,8 @@ static rect_t slot_rect(const display_t *d, int slot) {
         return pin_button(d, SLOT_PIN(0) - slot);
     if (SLOT_IS_DRIVE(slot))
         return drive_rect(d, SLOT_DRIVE(0) - slot);
+    if (slot == SLOT_NET)
+        return net_rect(d);
     window_t *win = window_in_slot(slot);
     return win ? task_button(d, win) : (rect_t){0, 0, 0, 0};
 }

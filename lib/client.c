@@ -184,6 +184,14 @@ void cs_window_resize(cs_window_t *win, int width, int height) {
     cs_msg_send(server_pid, &msg);
 }
 
+int cs_drop(cs_window_t *win, int x, int y, uint8_t keymod, const char *text) {
+    cs_msg_t msg = { .type = CS_REQ_DROP, .window = win->id, .x = x, .y = y, .keymod = keymod };
+    if (strlen(text) >= CS_TEXT_MAX)
+        return -1;
+    strcpy(msg.text, text);
+    return cs_msg_send(server_pid, &msg);
+}
+
 void cs_pointer_lock(cs_window_t *win, int on) {
     cs_msg_t msg = { .type = CS_REQ_POINTER_LOCK, .window = win->id, .x = on ? 1 : 0 };
     cs_msg_send(server_pid, &msg);

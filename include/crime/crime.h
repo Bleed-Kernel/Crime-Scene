@@ -27,6 +27,7 @@ enum {
     CS_REQ_TERMINAL,        // a new terminal with a shell in it, text (or title) is the directory it starts in
     CS_REQ_TITLE,           // window, title
     CS_REQ_RUN,             // text is the args, each with a nul after it. started like the run box does
+    CS_REQ_DROP,            // window, x y where something dragged out of it was let go, keymod, text
 
     // server to client
     CS_EV_OPENED = 100,     // window (0 if it failed), shm, w, h, pitch
@@ -37,6 +38,7 @@ enum {
     CS_EV_FOCUS,            // focused says whether it just got the focus or just lost it
     CS_EV_MOUSE_RELATIVE,   // x y are how far the mouse moved, buttons. only while the pointer is locked
     CS_EV_WHEEL,            // x y inside the window, wheel is how many notches. away from you is positive
+    CS_EV_DROP,             // x y inside the window, keymod and text as the window it came out of sent them
 };
 
 // every message is one of these in a page of its own
@@ -84,6 +86,9 @@ int cs_terminal_open(const char *cwd);
 // have the desktop start argv[0] with the rest as its args, in a terminal if it wants one.
 // -1 if they dont fit in a message or theres no desktop
 int cs_run(const char *const argv[]);
+
+// something dragged out of win was let go at x y (from wins top left, so off it
+int cs_drop(cs_window_t *win, int x, int y, uint8_t keymod, const char *text);
 
 // the size the desktop gives a window that doesnt ask for one, a share of the screen
 #define CS_SIZE_DEFAULT 0
