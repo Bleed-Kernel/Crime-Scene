@@ -26,7 +26,7 @@
 // nothing reaches the screen more often than this
 #define FRAME_FS (1000 * FS_PER_MS / 120)
 
-#define FDS_FIXED 3
+#define FDS_FIXED 4
 
 #define SWEEP_MS 1000
 #define SWEEP_FS (SWEEP_MS * FS_PER_MS)
@@ -122,28 +122,66 @@ static uint8_t ctrl_click(uint8_t buttons) {
     return buttons;
 }
 
+// the mouse and the touchscreen both end up here as a move
+static void pointer(int dx, int dy, int8_t wheel, uint8_t buttons) {
+    if (overview_up()) {
+        cursor_move(&cursor, &display, dx, dy);
+        overview_mouse(&display, cursor.x, cursor.y, buttons);
+        return;
+    }
+    if (wm_locked()) {
+        wm_mouse_relative(&display, dx, dy, buttons);
+        if (wheel)
+            wm_wheel(&display, cursor.x, cursor.y, wheel);
+        return;
+    }
+    cursor_move(&cursor, &display, dx, dy);
+    wm_mouse(&display, cursor.x, cursor.y, ctrl_click(buttons));
+    if (wheel && !taskbar_wheel(&display, cursor.x, cursor.y, wheel))
+        wm_wheel(&display, cursor.x, cursor.y, wheel);
+}
+
+// the first finger down is the pointer, the rest get ignored until it lifts
+static void touch(const touch_event_t *ev) {
+    static int finger = -1;
+    static int last_x, last_y;
+
+    int fresh = 0;
+    if (ev->flags & TOUCH_FINGER) {
+        if (finger < 0 && (ev->flags & TOUCH_DOWN)) {
+            finger = ev->contact;
+            fresh  = 1;
+        }
+        if (ev->contact != finger)
+            return;
+        if (!(ev->flags & TOUCH_DOWN))
+            finger = -1;
+    }
+
+    int x = (int)((uint32_t)ev->x * (uint32_t)(display.width - 1) / TOUCH_MAX);
+    int y = (int)((uint32_t)ev->y * (uint32_t)(display.height - 1) / TOUCH_MAX);
+
+    int dx = x - cursor.x, dy = y - cursor.y;
+    if (wm_locked()) {
+        dx = fresh ? 0 : x - last_x;
+        dy = fresh ? 0 : y - last_y;
+    }
+    last_x = x;
+    last_y = y;
+
+    pointer(dx, dy, ev->wheel, ev->buttons);
+}
+
 // returns 1 if its time to quit
-static int input(int mouse) {
+static int input(int mouse, int touchscreen) {
     mouse_event_t    mev;
+    touch_event_t    tev;
     keyboard_event_t kev;
 
-    while (mouse_next(mouse, &mev)) {
-        if (overview_up()) {
-            cursor_move(&cursor, &display, mev.dx, mev.dy);
-            overview_mouse(&display, cursor.x, cursor.y, mev.buttons);
-            continue;
-        }
-        if (wm_locked()) {
-            wm_mouse_relative(&display, mev.dx, mev.dy, mev.buttons);
-            if (mev.wheel)
-                wm_wheel(&display, cursor.x, cursor.y, mev.wheel);
-            continue;
-        }
-        cursor_move(&cursor, &display, mev.dx, mev.dy);
-        wm_mouse(&display, cursor.x, cursor.y, ctrl_click(mev.buttons));
-        if (mev.wheel && !taskbar_wheel(&display, cursor.x, cursor.y, mev.wheel))
-            wm_wheel(&display, cursor.x, cursor.y, mev.wheel);
-    }
+    while (mouse_next(mouse, &mev))
+        pointer(mev.dx, mev.dy, mev.wheel, mev.buttons);
+    while (touchscreen >= 0 && touch_next(touchscreen, &tev))
+        touch(&tev);
     cursor.shape = overview_up() ? CURSOR_ARROW : wm_cursor();
 
     while (keyboard_next(0, &kev)) {
@@ -240,6 +278,7 @@ int main(void) {
         printf("crime-scene: no mouse\n");
         return 1;
     }
+    int touchscreen = touch_open();
     if (font_init() < 0) {
         printf("crime-scene: no font ending in " FONT_UI_ROLE " in " FONT_DIR "\n");
         return 1;
@@ -337,6 +376,9 @@ int main(void) {
         fds[0] = (struct pollfd){ mouse,       POLLIN, 0 };
         fds[1] = (struct pollfd){ 0,           POLLIN, 0 };     // stdin is the keyboard
         fds[2] = (struct pollfd){ POLL_FD_IPC, POLLIN, 0 };
+
+        // no touch device handled
+        fds[3] = (struct pollfd){ touchscreen >= 0 ? touchscreen : mouse, POLLIN, 0 };
         term_pollfds(fds + FDS_FIXED, terms);
         if (terms && timeout > TERM_CHECK_MS)
             timeout = TERM_CHECK_MS;
@@ -352,7 +394,7 @@ int main(void) {
         if (ready <= 0)
             continue;
 
-        if (input(mouse))
+        if (input(mouse, touchscreen))
             break;
         server_requests(&display);
         server_focus(&display);

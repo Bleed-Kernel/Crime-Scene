@@ -8,6 +8,10 @@ static mouse_event_t mouse_batch[BATCH];
 static int           mouse_count;
 static int           mouse_pos;
 
+static touch_event_t touch_batch[BATCH];
+static int           touch_count;
+static int           touch_pos;
+
 static keyboard_event_t keyboard_batch[BATCH];
 static int              keyboard_count;
 static int              keyboard_pos;
@@ -29,6 +33,26 @@ int mouse_next(int fd, mouse_event_t *ev) {
     }
 
     *ev = mouse_batch[mouse_pos++];
+    return 1;
+}
+
+int touch_open(void) {
+    return _open("/dev/touch", O_RDONLY);
+}
+
+int touch_next(int fd, touch_event_t *ev) {
+    if (touch_pos == touch_count) {
+        long n = _read(fd, touch_batch, sizeof(touch_batch));
+        if (n <= 0)
+            return 0;
+
+        touch_count = (int)(n / (long)sizeof(touch_event_t));
+        touch_pos   = 0;
+        if (!touch_count)
+            return 0;
+    }
+
+    *ev = touch_batch[touch_pos++];
     return 1;
 }
 

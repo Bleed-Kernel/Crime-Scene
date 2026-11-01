@@ -31,3 +31,13 @@ void volume_write(int percent, int mute) {
     if (audio_open())
         _ioctl(audio_fd, AUDIO_IOC_SET_VOLUME, &vol);
 }
+
+int volume_outputs(struct audio_outputs *outputs) {
+    return audio_open() && _ioctl(audio_fd, AUDIO_IOC_GET_OUTPUTS, outputs) == 0 && outputs->count > 1;
+}
+
+void volume_set_output(int index) {
+    int32_t want = index;
+    if (audio_open())
+        _ioctl(audio_fd, AUDIO_IOC_SET_OUTPUT, &want);
+}

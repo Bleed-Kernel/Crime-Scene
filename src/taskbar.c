@@ -60,6 +60,9 @@
 #define VOL_BOX         13
 #define VOL_LABEL       "Volume"
 #define VOL_MUTE        "Mute"
+#define VOL_OUT_LABEL   "Output"
+#define VOL_OUT_AUTO    "Automatic"
+#define VOL_OUT_ROW     18
 
 #define DRIVE_ICON_PX   16
 #define DRIVE_W         16
@@ -159,6 +162,8 @@ static int      vol_mute;
 static uint64_t vol_checked;
 static int      vol_open;
 static int      vol_dragging;
+static int      vol_out_present;
+static struct audio_outputs vol_outs;
 
 static drive_t  drives[DRIVES_MAX];
 static int      drives_count;
@@ -594,6 +599,41 @@ static rect_t vol_mute_rect(const display_t *d) {
     return (rect_t){r.x + (r.w - w) / 2, r.y + r.h - VOL_PAD - VOL_BOX, w, VOL_BOX};
 }
 
+// beside the slider, only when theres more than one way out
+static rect_t vol_out_rect(const display_t *d) {
+    rect_t r = vol_rect(d);
+    int    w = font_text_width(&font_ui, VOL_OUT_AUTO);
+    for (uint32_t i = 0; i < vol_outs.count; i++) {
+        int name = font_text_width(&font_ui, vol_outs.out[i].name);
+        if (name > w)
+            w = name;
+    }
+    w += VOL_BOX + 4 + VOL_PAD * 2;
+    return (rect_t){r.x - w, r.y, w, r.h};
+}
+
+// row 0 is automatic, the rest are vol_outs
+static rect_t vol_out_row(const display_t *d, int row) {
+    rect_t r = vol_out_rect(d);
+    int    y = r.y + VOL_PAD + font_height(&font_ui) + VOL_PAD + row * VOL_OUT_ROW;
+    return (rect_t){r.x + VOL_PAD, y, r.w - VOL_PAD * 2, VOL_OUT_ROW};
+}
+
+static void vol_out_read(display_t *d) {
+    struct audio_outputs outs;
+    memset(&outs, 0, sizeof(outs));
+    int present = volume_outputs(&outs);
+    if (present == vol_out_present && !memcmp(&outs, &vol_outs, sizeof(outs)))
+        return;
+
+    if (vol_open && vol_out_present)
+        display_damage(d, vol_out_rect(d));
+    vol_out_present = present;
+    vol_outs        = outs;
+    if (vol_open && present)
+        display_damage(d, vol_out_rect(d));
+}
+
 static void vol_damage(display_t *d) {
     if (vol_open)
         display_damage(d, vol_rect(d));
@@ -625,12 +665,17 @@ static void vol_set_at(display_t *d, int y) {
 static void vol_set_open(display_t *d, int open) {
     if (open == vol_open)
         return;
-    if (vol_open)
+    if (vol_open) {
         display_damage(d, vol_rect(d));
+        if (vol_out_present)
+            display_damage(d, vol_out_rect(d));
+    }
     vol_open     = open;
     vol_dragging = 0;
-    if (open)
+    if (open) {
+        vol_out_read(d);
         display_damage(d, vol_rect(d));
+    }
 }
 
 // the memory tip has that corner if its up
@@ -747,6 +792,8 @@ static void vol_update(display_t *d) {
     if (vol_dragging || (vol_checked && clock_now() - vol_checked < VOL_CHECK_FS))
         return;
     vol_checked = clock_now();
+    if (vol_open)
+        vol_out_read(d);
 
     int percent = 0, mute = 0;
     int present = volume_read(&percent, &mute);
@@ -1369,14 +1416,39 @@ static void vol_draw(display_t *d, rect_t clip) {
               VOL_MUTE, COLOUR_TEXT);
 }
 
+static void vol_out_draw(display_t *d, rect_t clip) {
+    rect_t r = vol_out_rect(d);
+    if (!rect_overlaps(r, clip))
+        return;
+
+    display_raised(d, clip, r);
+    rect_t inside = rect_clip(rect_shrink(r, 2), clip);
+    font_draw(d, inside, &font_ui, r.x + VOL_PAD, r.y + VOL_PAD, VOL_OUT_LABEL, COLOUR_TEXT);
+
+    for (int row = 0; row <= (int)vol_outs.count; row++) {
+        rect_t      at     = vol_out_row(d, row);
+        int         out    = row - 1;
+        int         ticked = vol_outs.selected == out;
+        int         lit    = !row || (vol_outs.out[out].flags & AUDIO_OUTPUT_ACTIVE);
+        const char *name   = row ? vol_outs.out[out].name : VOL_OUT_AUTO;
+
+        checkbox_draw(d, clip, (rect_t){at.x, at.y + (at.h - VOL_BOX) / 2, VOL_BOX, VOL_BOX}, ticked);
+        font_draw(d, inside, &font_ui, at.x + VOL_BOX + 4, at.y + (at.h - font_height(&font_ui)) / 2, name,
+                  lit ? COLOUR_TEXT : COLOUR_BACK_TEXT);
+    }
+}
+
 void taskbar_draw(display_t *d, rect_t clip) {
     // the parts of the bar that arent on the bar, they go over whatever windows are there
     if (menu_open)
         menu_draw(d, clip);
     if (ctx_open)
         ctx_draw(d, clip);
-    if (vol_open)
+    if (vol_open) {
         vol_draw(d, clip);
+        if (vol_out_present)
+            vol_out_draw(d, clip);
+    }
     if (tip_shown())
         tip_draw(d, clip);
     if (batt_tip_shown())
@@ -1597,11 +1669,20 @@ int taskbar_mouse(display_t *d, int x, int y, uint8_t buttons, uint8_t was_butto
             }
             if (rect_contains(pop, x, y))
                 return 1;
+            if (vol_out_present && rect_contains(vol_out_rect(d), x, y)) {
+                for (int row = 0; row <= (int)vol_outs.count; row++) {
+                    if (rect_contains(vol_out_row(d, row), x, y)) {
+                        volume_set_output(row - 1);
+                        vol_out_read(d);
+                    }
+                }
+                return 1;
+            }
 
             vol_set_open(d, 0);
             if (on_speaker)
                 return 1;
-        } else if (rect_contains(pop, x, y)) {
+        } else if (rect_contains(pop, x, y) || (vol_out_present && rect_contains(vol_out_rect(d), x, y))) {
             return 1;
         }
     } else if (on_speaker && left && !was_left && held == SLOT_NONE) {
