@@ -107,7 +107,7 @@
 #define CTX_ITEMS_MAX   3
 #define CTX_PAD         10      // either side of a label
 
-#define ABOUT_PATH      "/initrd/bin/about"
+#define ABOUT_PATH      "/bin/about"
 
 #define POWER_PATH      "/dev/power"
 #define POWER_RESTART   0xEEEEEEEEUL

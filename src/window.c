@@ -34,10 +34,11 @@ typedef struct {
     int           focused;
     int           buttons;      // the three on the title bar
     int           sunken;       // the content is set into the frame, the desktops own things sit flush
+    int           bare;         // no frame at all, only the shadow
 } chrome_t;
 
 static chrome_t chrome_of(const window_t *win) {
-    return (chrome_t){ window_content(win), win->title, win->icon, win == window_focused(), 1, 1 };
+    return (chrome_t){ window_content(win), win->title, win->icon, win == window_focused(), !win->bare, 1, win->bare };
 }
 
 rect_t window_content(const window_t *win) {
@@ -54,7 +55,28 @@ rect_t window_frame_around(rect_t content) {
 }
 
 static rect_t chrome_frame(const chrome_t *c) {
-    return window_frame_around(c->content);
+    return c->bare ? c->content : window_frame_around(c->content);
+}
+
+rect_t window_frame_for(const window_t *win, rect_t content) {
+    return win->bare ? content : window_frame_around(content);
+}
+
+rect_t window_content_for(const window_t *win, rect_t frame) {
+    if (win->bare)
+        return frame;
+    return (rect_t){ frame.x + WINDOW_INSET, frame.y + WINDOW_INSET_TOP, frame.w - WINDOW_INSET * 2,
+                     frame.h - WINDOW_INSET_TOP - WINDOW_INSET };
+}
+
+int window_top_min(const window_t *win) {
+    return win->bare ? 0 : WINDOW_INSET_TOP;
+}
+
+int window_state(const window_t *win) {
+    if (win->minimised)
+        return CS_STATE_MINIMISED;
+    return win->maximised ? CS_STATE_MAXIMISED : CS_STATE_NORMAL;
 }
 
 static rect_t chrome_caption(rect_t content) {
@@ -83,11 +105,16 @@ rect_t window_bounds(const window_t *win) {
                     frame.w + WINDOW_SHADOW * 2, frame.h + WINDOW_SHADOW * 2};
 }
 
+// a bare window has neither, the program draws its own
 rect_t window_titlebar(const window_t *win) {
+    if (win->bare)
+        return (rect_t){0, 0, 0, 0};
     return chrome_caption(window_content(win));
 }
 
 rect_t window_button(const window_t *win, int which) {
+    if (win->bare)
+        return (rect_t){0, 0, 0, 0};
     chrome_t c = chrome_of(win);
     return chrome_button(&c, which);
 }
@@ -112,6 +139,12 @@ rect_t window_maximised_rect(const display_t *d) {
         d->width + WINDOW_FRAME * 2 - WINDOW_INSET * 2,
         d->height - TASKBAR_H + WINDOW_FRAME * 2 - WINDOW_INSET_TOP - WINDOW_INSET
     };
+}
+
+rect_t window_maximised_for(const display_t *d, const window_t *win) {
+    if (win->bare)
+        return (rect_t){0, 0, d->width, d->height - TASKBAR_H};
+    return window_maximised_rect(d);
 }
 
 static int shown(const window_t *win) {
@@ -358,6 +391,16 @@ void window_close(display_t *d, window_t *win) {
         display_damage(d, window_bounds(window_top()));
 }
 
+void window_set_bare(display_t *d, window_t *win, int bare) {
+    if (win->bare == !!bare)
+        return;
+    display_damage(d, window_bounds(win));
+    win->bare = !!bare;
+    if (win->y < window_top_min(win))
+        win->y = window_top_min(win);
+    display_damage(d, window_bounds(win));
+}
+
 void window_minimise(display_t *d, window_t *win) {
     if (win->minimised)
         return;
@@ -394,7 +437,7 @@ void window_move(display_t *d, window_t *win, int x, int y) {
     if (x > d->width - 48)  x = d->width - 48;
     if (x < 48 - win->w)    x = 48 - win->w;
     if (y > d->height - TASKBAR_H - 4) y = d->height - TASKBAR_H - 4;
-    if (y < WINDOW_INSET_TOP) y = WINDOW_INSET_TOP;
+    if (y < window_top_min(win)) y = window_top_min(win);
 
     if (x == win->x && y == win->y)
         return;
@@ -537,6 +580,8 @@ static void chrome_draw(display_t *d, rect_t clip, const chrome_t *c, int shadow
         rect_t caster = {frame.x, frame.y + SHADOW_DROP, frame.w, frame.h};
         display_shadow(d, clip, caster, frame, SHADOW_REACH, c->focused ? SHADOW_FOCUSED : SHADOW_BACK);
     }
+    if (c->bare)
+        return;
 
     // just the grey round the outside, the content covers the middle
     fill(d, clip, (rect_t){frame.x, frame.y, frame.w, content.y - frame.y}, COLOUR_FACE);
@@ -569,7 +614,7 @@ static void chrome_draw(display_t *d, rect_t clip, const chrome_t *c, int shadow
 }
 
 void window_chrome_draw(display_t *d, rect_t clip, rect_t content, const char *title) {
-    chrome_t c = { content, title, NULL, 1, 0, 0 };
+    chrome_t c = { content, title, NULL, 1, 0, 0, 0 };
     chrome_draw(d, clip, &c, 1);
 }
 
@@ -582,7 +627,7 @@ static void window_draw(display_t *d, rect_t clip, const window_t *win, int focu
     c.focused  = focused;
     chrome_draw(d, clip, &c, shadow);
 
-    for (int which = WINDOW_BUTTON_MIN; which <= WINDOW_BUTTON_CLOSE; which++)
+    for (int which = WINDOW_BUTTON_MIN; which <= WINDOW_BUTTON_CLOSE && !win->bare; which++)
         button_draw(d, clip, win, which);
 
     display_blit(d, clip, win->x, win->y, win->pixels, win->w, win->h, win->cap_w);

@@ -23,6 +23,7 @@
 #define WINDOW_BUTTON_CLOSE 3
 
 #define WINDOW_SHADOW     14     // how far the shadow can reach past the frame
+#define WINDOW_BARE_GRIP  4
 
 #define WINDOW_GROW       128    // buffers are sized up to a multiple of this
 
@@ -49,6 +50,9 @@ typedef struct window {
     uint8_t   snapped;      // filling a half or a quarter of it, which one. restore is kept the same way
     rect_t    restore;
 
+    uint8_t   bare;         // CS_STYLE_BARE, the program draws its own title bar and buttons
+    uint8_t   state_told;   // the CS_STATE_ it was last sent, it starts out normal
+
     uint8_t   wants_lock;
     uint8_t   lock_broken;
     int       slot;
@@ -70,6 +74,19 @@ void      window_restore(display_t *d, window_t *win);
 
 // the content rect a window has when it fills the screen
 rect_t    window_maximised_rect(const display_t *d);
+rect_t    window_maximised_for(const display_t *d, const window_t *win);
+
+// the frame for content and the other way round, a bare window is all content
+rect_t    window_frame_for(const window_t *win, rect_t content);
+rect_t    window_content_for(const window_t *win, rect_t frame);
+
+// how far its top can go up the screen and still leave something to grab
+int       window_top_min(const window_t *win);
+
+int       window_state(const window_t *win);
+
+// take the frame away or give it back, the content stays where it is on the screen
+void      window_set_bare(display_t *d, window_t *win, int bare);
 
 // new place and size for the content. 0 if it worked
 int       window_resize(display_t *d, window_t *win, int x, int y, int w, int h);

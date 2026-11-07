@@ -43,6 +43,9 @@ static window_t *hovered;       // the pointer is resting on one of its title ba
 #define DOUBLE_CLICK_FS (400 * FS_PER_MS)
 
 static window_t *clicked;       // the title bar that was last pressed
+static int       drag_client;   // the drag came from a bare windows own title bar, it gets the button up
+static int       pointer_x;     // where the mouse was last
+static int       pointer_y;
 static uint64_t  clicked_at;
 
 #define EDGE_LEFT    (1 << 0)
@@ -105,9 +108,10 @@ static int edges_at(const window_t *win, int x, int y) {
     if (win->maximised)
         return 0;
 
+    // a bare window has no border, the grip is a strip just inside its edges
     rect_t frame = window_frame(win);
-    rect_t inner = {frame.x + WINDOW_FRAME, frame.y + WINDOW_FRAME,
-                    frame.w - WINDOW_FRAME * 2, frame.h - WINDOW_FRAME * 2};
+    int    grip  = win->bare ? WINDOW_BARE_GRIP : WINDOW_FRAME;
+    rect_t inner = {frame.x + grip, frame.y + grip, frame.w - grip * 2, frame.h - grip * 2};
     if (!rect_contains(frame, x, y) || rect_contains(inner, x, y))
         return 0;
 
@@ -162,7 +166,7 @@ static void resize_drag(display_t *d, int x, int y) {
     }
     if (resize_edges & EDGE_TOP) {
         if (dy > r.h - WINDOW_MIN_H) dy = r.h - WINDOW_MIN_H;
-        if (r.y + dy < WINDOW_INSET_TOP) dy = WINDOW_INSET_TOP - r.y;
+        if (r.y + dy < window_top_min(resizing)) dy = window_top_min(resizing) - r.y;
         r.y += dy;
         r.h -= dy;
     }
@@ -310,13 +314,13 @@ static void button_hover(display_t *d, int x, int y) {
     hovered = win;
 }
 
-// the content rect for a window filling zone
-static rect_t snap_rect(const display_t *d, int zone) {
-    if (zone == SNAP_MAX)
-        return window_maximised_rect(d);
-
+// the frame of a window filling zone, the outline is drawn round it
+static rect_t snap_outline(const display_t *d, int zone) {
     int    half   = d->width / 2;
     int    work_h = d->height - TASKBAR_H;
+    if (zone == SNAP_MAX)
+        return (rect_t){0, 0, d->width, work_h};
+
     int    left   = zone == SNAP_LEFT || zone == SNAP_TL || zone == SNAP_BL;
     rect_t frame  = { left ? 0 : half, 0, left ? half : d->width - half, work_h };
     if (zone == SNAP_TL || zone == SNAP_TR)
@@ -325,17 +329,14 @@ static rect_t snap_rect(const display_t *d, int zone) {
         frame.y = work_h / 2;
         frame.h = work_h - work_h / 2;
     }
-    return (rect_t){ frame.x + WINDOW_INSET, frame.y + WINDOW_INSET_TOP, frame.w - WINDOW_INSET * 2,
-                     frame.h - WINDOW_INSET_TOP - WINDOW_INSET };
+    return frame;
 }
 
-// the outline is drawn round the frame the window would have there
-static rect_t snap_outline(const display_t *d, int zone) {
-    rect_t r = snap_rect(d, zone);
+// the content rect for win filling zone
+static rect_t snap_rect(const display_t *d, const window_t *win, int zone) {
     if (zone == SNAP_MAX)
-        return (rect_t){0, 0, d->width, d->height - TASKBAR_H};
-    return (rect_t){ r.x - WINDOW_INSET, r.y - WINDOW_INSET_TOP, r.w + WINDOW_INSET * 2,
-                     r.h + WINDOW_INSET_TOP + WINDOW_INSET };
+        return window_maximised_for(d, win);
+    return window_content_for(win, snap_outline(d, zone));
 }
 
 static void snap_set(display_t *d, int zone) {
@@ -374,7 +375,7 @@ static void snap(display_t *d, window_t *win, int zone) {
         win->restore = window_content(win);
     win->maximised = 0;
     win->snapped   = (uint8_t)zone;
-    rect_t to = snap_rect(d, zone);
+    rect_t to = snap_rect(d, win, zone);
     server_resize(d, win, to.x, to.y, to.w, to.h);
 }
 
@@ -543,15 +544,23 @@ static void release(display_t *d, int x, int y, uint8_t buttons) {
         resizing = NULL;
     }
 
+    // it saw the button go down, so it hears about it coming up too
+    if (dragging && drag_client)
+        send_mouse(d, dragging, x, y, buttons);
+
     if (dragging && snap_zone)
         snap(d, dragging, snap_zone);
     snap_set(d, SNAP_NONE);
 
-    dragging = NULL;
+    dragging    = NULL;
+    drag_client = 0;
     grabbed  = NULL;
 }
 
 void wm_mouse(display_t *d, int x, int y, uint8_t buttons) {
+    pointer_x = x;
+    pointer_y = y;
+
     uint8_t left     = buttons & MOUSE_BTN_LEFT;
     uint8_t was      = buttons_last;
     uint8_t was_left = was & MOUSE_BTN_LEFT;
@@ -626,6 +635,22 @@ void wm_mouse(display_t *d, int x, int y, uint8_t buttons) {
     motion_for = win;
     motion_x   = x;
     motion_y   = y;
+}
+
+void wm_move_drag(display_t *d, window_t *win) {
+    (void)d;
+    if (!(buttons_last & MOUSE_BTN_LEFT) || grabbed != win || dragging || resizing)
+        return;
+
+    grabbed     = NULL;
+    clicked     = NULL;
+    dragging    = win;
+    drag_client = 1;
+    drag_dx     = pointer_x - win->x;
+    drag_dy     = pointer_y - win->y;
+    drag_from_x = pointer_x;
+    drag_from_y = pointer_y;
+    drag_loose  = !win->maximised && !win->snapped;
 }
 
 void wm_frame(display_t *d) {

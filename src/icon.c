@@ -9,7 +9,7 @@
 #define ICON_PATH_MAX   256
 #define ICON_NAME_MAX   32
 
-#define CABINET_PATH    "/initrd/bin/cabinet"
+#define CABINET_PATH    "/bin/cabinet"
 #define CABINET_DEVICE  ".bleed.cab.device"
 
 typedef struct {

@@ -24,3 +24,4 @@ void server_kill(display_t *d, window_t *win);
 
 // tell clients when the window with the focus changes
 void server_focus(display_t *d);
+void server_states(display_t *d);

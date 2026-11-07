@@ -5,6 +5,8 @@
 // desktop icon logic
 void desktop_init(display_t *d);
 
+void desktop_refresh(display_t *d);
+
 // over the wallpaper, under every window
 void desktop_draw(display_t *d, rect_t clip);
 

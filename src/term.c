@@ -16,7 +16,7 @@
 #include <term.h>
 #include <wm.h>
 
-#define SHELL_PATH  "/initrd/bin/verdict"
+#define SHELL_PATH  "/bin/verdict"
 #define SHELL_WINDOW_ARG "--window-shell"
 
 // taskman stops looking here too

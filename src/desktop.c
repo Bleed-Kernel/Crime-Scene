@@ -50,7 +50,10 @@ static int grid_rows(display_t *d) {
     return rows < 1 ? 1 : rows;
 }
 
+static uint32_t scanned;
+
 void desktop_init(display_t *d) {
+    scanned = apps_signature();
     apps_scan();
     count = apps_count();
     items = calloc((size_t)(count ? count : 1), sizeof(item_t));
@@ -66,6 +69,71 @@ void desktop_init(display_t *d) {
         items[i].x = MARGIN + (i / rows) * CELL_W;
         items[i].y = MARGIN + (i % rows) * CELL_H;
     }
+}
+
+static void free_cell(display_t *d, const item_t *list, int n, int *x, int *y) {
+    int rows = grid_rows(d), cells = grid_cols(d) * rows;
+    for (int c = 0; c < cells; c++) {
+        int cx = MARGIN + (c / rows) * CELL_W;
+        int cy = MARGIN + (c % rows) * CELL_H;
+        int used = 0;
+        for (int j = 0; j < n && !used; j++)
+            used = list[j].x == cx && list[j].y == cy;
+        if (!used) {
+            *x = cx;
+            *y = cy;
+            return;
+        }
+    }
+    // a full desktop stacks the rest in the last cell
+    *x = MARGIN + (cells - 1) / rows * CELL_W;
+    *y = MARGIN + (cells - 1) % rows * CELL_H;
+}
+
+void desktop_refresh(display_t *d) {
+    // not under a drag, the indices its holding would move
+    if (held >= 0)
+        return;
+    uint32_t now = apps_signature();
+    if (now == scanned)
+        return;
+    scanned = now;
+
+    apps_scan();
+    int n = apps_count();
+    item_t *next = calloc((size_t)(n ? n : 1), sizeof(item_t));
+    if (!next)
+        return;
+
+    int *placed = calloc((size_t)(n ? n : 1), sizeof(int));
+    for (int i = 0; i < n; i++) {
+        next[i].app  = *apps_index(i);
+        next[i].x    = next[i].y = -CELL_W;
+        for (int j = 0; j < count; j++) {
+            if (!strcmp(items[j].app.path, next[i].app.path)) {
+                next[i].x = items[j].x;
+                next[i].y = items[j].y;
+                if (placed)
+                    placed[i] = 1;
+                break;
+            }
+        }
+    }
+    for (int i = 0; i < n; i++) {
+        if (placed && placed[i])
+            continue;
+        free_cell(d, next, n, &next[i].x, &next[i].y);
+    }
+    for (int i = 0; i < n; i++)
+        next[i].icon = icon_for_path(next[i].app.path, 32);
+    free(placed);
+
+    free(items);
+    items   = next;
+    count   = n;
+    picked  = -1;
+    clicked = -1;
+    display_damage(d, (rect_t){0, 0, d->width, d->height - TASKBAR_H});
 }
 
 // as much of name as fits in max_w, with .. on the end if it had to be cut

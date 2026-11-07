@@ -98,7 +98,7 @@ void server_maximise(display_t *d, window_t *win) {
         // a snapped window already has where it came from kept, thats where it goes back to
         if (!win->snapped)
             win->restore = window_content(win);
-        to = window_maximised_rect(d);
+        to = window_maximised_for(d, win);
     }
     win->snapped = 0;
 
@@ -123,6 +123,22 @@ void server_kill(display_t *d, window_t *win) {
 }
 
 static uint32_t focus_told;     // the window that was last told it has the focus
+
+void server_states(display_t *d) {
+    for (int i = 0; window_index(i); i++) {
+        window_t *win   = window_index(i);
+        int       state = window_state(win);
+        if (state == win->state_told || win->term)
+            continue;
+
+        win->state_told = (uint8_t)state;
+        uint32_t id     = win->id;
+        cs_msg_t msg    = { .type = CS_EV_STATE, .x = state };
+        server_send(d, win, &msg);
+        if (!window_find(id))
+            i = -1;
+    }
+}
 
 void server_focus(display_t *d) {
     window_t *top = window_focused();
@@ -155,6 +171,8 @@ static void request_open(display_t *d, uint64_t sender, const cs_msg_t *req) {
     title[CS_TITLE_MAX - 1] = '\0';
 
     window_t *win = window_open(d, sender, req->w, req->h, title);
+    if (win && (req->x & CS_STYLE_BARE))
+        window_set_bare(d, win, 1);
     if (win) {
         reply.window = win->id;
         reply.shm    = win->shm;
@@ -254,6 +272,22 @@ void server_requests(display_t *d) {
                 break;
             case CS_REQ_DROP:
                 request_drop(d, win, &req);
+                break;
+            case CS_REQ_STYLE:
+                window_set_bare(d, win, req.x & CS_STYLE_BARE);
+                break;
+            case CS_REQ_MOVE_DRAG:
+                wm_move_drag(d, win);
+                break;
+            case CS_REQ_STATE:
+                if (req.x == CS_STATE_MINIMISED) {
+                    window_minimise(d, win);
+                    break;
+                }
+                if (win->minimised)
+                    window_restore(d, win);
+                if ((req.x == CS_STATE_MAXIMISED) != !!win->maximised)
+                    server_maximise(d, win);
                 break;
         }
     }

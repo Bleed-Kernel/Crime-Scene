@@ -18,7 +18,7 @@
 
 enum {
     // client to server
-    CS_REQ_OPEN = 1,        // w, h, title. w and h of 0 leave the size up to the desktop
+    CS_REQ_OPEN = 1,        // w, h, title, x is CS_STYLE_ flags. w and h of 0 leave the size up to the desktop
     CS_REQ_CLOSE,           // window
     CS_REQ_COMMIT,          // window, x y w h of what was drawn, serial
     CS_REQ_MOVE,            // window, x y on the screen
@@ -28,6 +28,9 @@ enum {
     CS_REQ_TITLE,           // window, title
     CS_REQ_RUN,             // text is the args, each with a nul after it. started like the run box does
     CS_REQ_DROP,            // window, x y where something dragged out of it was let go, keymod, text
+    CS_REQ_STYLE,           // window, x is CS_STYLE_ flags
+    CS_REQ_MOVE_DRAG,       // window, the desktop moves it with the mouse until the button comes up
+    CS_REQ_STATE,           // window, x is the CS_STATE_ it should be in
 
     // server to client
     CS_EV_OPENED = 100,     // window (0 if it failed), shm, w, h, pitch
@@ -39,6 +42,15 @@ enum {
     CS_EV_MOUSE_RELATIVE,   // x y are how far the mouse moved, buttons. only while the pointer is locked
     CS_EV_WHEEL,            // x y inside the window, wheel is how many notches. away from you is positive
     CS_EV_DROP,             // x y inside the window, keymod and text as the window it came out of sent them
+    CS_EV_STATE,            // x is the CS_STATE_ the window is in now, sent whenever that changes
+};
+
+#define CS_STYLE_BARE (1 << 0)
+
+enum {
+    CS_STATE_NORMAL = 0,
+    CS_STATE_MINIMISED,
+    CS_STATE_MAXIMISED,
 };
 
 // every message is one of these in a page of its own
@@ -94,6 +106,12 @@ int cs_drop(cs_window_t *win, int x, int y, uint8_t keymod, const char *text);
 #define CS_SIZE_DEFAULT 0
 
 cs_window_t *cs_window_open(int width, int height, const char *title);
+cs_window_t *cs_window_open_style(int width, int height, const char *title, uint32_t style);
+void cs_window_style(cs_window_t *win, uint32_t style);
+
+void cs_window_move_drag(cs_window_t *win);
+
+void cs_window_state(cs_window_t *win, int state);
 void cs_window_close(cs_window_t *win);
 
 // tell the desktop part of the window changed, nothing shows up until this

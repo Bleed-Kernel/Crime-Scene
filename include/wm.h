@@ -39,3 +39,5 @@ cursor_shape_t wm_cursor(void);
 
 // win is about to go away
 void wm_forget(window_t *win);
+
+void wm_move_drag(display_t *d, window_t *win);

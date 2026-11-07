@@ -104,6 +104,10 @@ static int client_recv(cs_msg_t *msg, int timeout_ms) {
 }
 
 cs_window_t *cs_window_open(int width, int height, const char *title) {
+    return cs_window_open_style(width, height, title, 0);
+}
+
+cs_window_t *cs_window_open_style(int width, int height, const char *title, uint32_t style) {
     if (!server_pid && cs_connect() < 0)
         return NULL;
 
@@ -117,7 +121,7 @@ cs_window_t *cs_window_open(int width, int height, const char *title) {
     if (!win)
         return NULL;
 
-    cs_msg_t msg = { .type = CS_REQ_OPEN, .w = width, .h = height };
+    cs_msg_t msg = { .type = CS_REQ_OPEN, .w = width, .h = height, .x = (int32_t)style };
     strncpy(msg.title, title ? title : "", CS_TITLE_MAX - 1);
     if (cs_msg_send(server_pid, &msg) < 0)
         return NULL;
@@ -190,6 +194,21 @@ int cs_drop(cs_window_t *win, int x, int y, uint8_t keymod, const char *text) {
         return -1;
     strcpy(msg.text, text);
     return cs_msg_send(server_pid, &msg);
+}
+
+void cs_window_style(cs_window_t *win, uint32_t style) {
+    cs_msg_t msg = { .type = CS_REQ_STYLE, .window = win->id, .x = (int32_t)style };
+    cs_msg_send(server_pid, &msg);
+}
+
+void cs_window_move_drag(cs_window_t *win) {
+    cs_msg_t msg = { .type = CS_REQ_MOVE_DRAG, .window = win->id };
+    cs_msg_send(server_pid, &msg);
+}
+
+void cs_window_state(cs_window_t *win, int state) {
+    cs_msg_t msg = { .type = CS_REQ_STATE, .window = win->id, .x = state };
+    cs_msg_send(server_pid, &msg);
 }
 
 void cs_pointer_lock(cs_window_t *win, int on) {

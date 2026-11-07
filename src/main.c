@@ -326,6 +326,7 @@ int main(void) {
 
         window_focus_hold(&display, overview_up());
         server_focus(&display);
+        server_states(&display);
 
         anim_tick(&display);
         overview_tick(&display);
@@ -352,7 +353,9 @@ int main(void) {
         if (clock_now() - last_sweep >= SWEEP_FS) {
             server_sweep(&display);
             server_focus(&display);
+            server_states(&display);
             taskbar_update(&display);
+            desktop_refresh(&display);
             last_sweep = clock_now();
         }
 
@@ -398,6 +401,7 @@ int main(void) {
             break;
         server_requests(&display);
         server_focus(&display);
+        server_states(&display);
         taskbar_update(&display);
     }
 

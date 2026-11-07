@@ -1,7 +1,7 @@
 #pragma once
 #include <display.h>
 
-#define WALLPAPER_PATH "/initrd/etc/wallpaper.png"
+#define WALLPAPER_PATH "/etc/wallpaper.png"
 
 // reads the wallpaper and fits it to the screen. no file or a bad one and the desktop is just black
 void wallpaper_init(const display_t *d);

@@ -29,7 +29,7 @@ typedef struct {
     int                 extra_cap;
 } font_t;
 
-#define FONT_DIR            "/initrd/fonts"
+#define FONT_DIR            "/usr/share/fonts"
 
 
 // These are optional, if they dont exist then it just falls back to the standard UI font

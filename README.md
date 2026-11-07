@@ -16,7 +16,7 @@ Crime Scene will not start automatically, it is very important that Verdict Star
 - Terminal Windows with Verdict
 - Cursor Locking Semantics
 - Window events
-- TrueType fonts from `/initrd/fonts`
+- TrueType fonts from `/usr/share/fonts`
 - PNG wallpaper, scaled to cover the screen
 - Ctrl Alt Backspace to quit back to tty mode
 

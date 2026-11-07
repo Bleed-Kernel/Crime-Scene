@@ -7,7 +7,7 @@
 #include <apps.h>
 #include <term.h>
 
-#define SHELL_PATH      "/initrd/bin/verdict"
+#define SHELL_PATH      "/bin/verdict"
 #define FD_SCAN         256
 #define DIR_TYPE        0
 
@@ -80,6 +80,11 @@ int app_info(const char *path, app_t *out) {
 }
 
 static int app_add(const app_t *app) {
+    // in two PATH folders, the first one is what the shell would run
+    for (int i = 0; i < apps_len; i++) {
+        if (!strcmp(apps[i].name, app->name))
+            return 0;
+    }
     if (apps_len == apps_cap) {
         int    cap    = apps_cap ? apps_cap * 2 : 16;
         app_t *bigger = realloc(apps, (size_t)cap * sizeof(app_t));
@@ -128,21 +133,26 @@ static void apps_scan_dir(const char *dir_path) {
     _close(dir);
 }
 
-static void data_dirs(int (*fn)(const char *dir, void *arg), void *arg) {
-    int dir = _open(DATA_APPS_DIR, O_RDONLY);
-    if (dir < 0)
-        return;
+static int path_dirs(int (*fn)(const char *dir, void *arg), void *arg) {
+    const char *path = getenv("PATH");
+    if (!path || !*path)
+        path = DEFAULT_PATH;
 
-    dirent_t entry;
-    char path[APP_PATH_MAX];
-    for (size_t i = 0; _readdir(dir, i, &entry) == 0; i++) {
-        entry.name[sizeof(entry.name) - 1] = '\0';
-        if (cs_name_hidden(entry.name) || entry.type != DIR_TYPE || path_join(path, DATA_APPS_DIR, entry.name) != 0)
-            continue;
-        if (fn(path, arg))
-            break;
+    char dir[APP_PATH_MAX];
+    while (*path) {
+        const char *end = strchr(path, ':');
+        size_t len = end ? (size_t)(end - path) : strlen(path);
+        if (len && len < sizeof(dir)) {
+            memcpy(dir, path, len);
+            dir[len] = '\0';
+            if (fn(dir, arg))
+                return 1;
+        }
+        path += len;
+        if (*path == ':')
+            path++;
     }
-    _close(dir);
+    return 0;
 }
 
 static int scan_one(const char *dir, void *arg) {
@@ -153,9 +163,31 @@ static int scan_one(const char *dir, void *arg) {
 
 int apps_scan(void) {
     apps_len = 0;
-    apps_scan_dir(APPS_DIR);
-    data_dirs(scan_one, NULL);
+    path_dirs(scan_one, NULL);
     return apps_len;
+}
+
+static int sign_one(const char *dir_path, void *arg) {
+    uint32_t *h = arg;
+    int dir = _open(dir_path, O_RDONLY);
+    if (dir < 0)
+        return 0;
+
+    dirent_t entry;
+    for (size_t i = 0; _readdir(dir, i, &entry) == 0; i++) {
+        entry.name[sizeof(entry.name) - 1] = '\0';
+        for (const char *c = entry.name; *c; c++)
+            *h = (*h ^ (uint8_t)*c) * 16777619u;
+        *h = (*h ^ '/') * 16777619u;
+    }
+    _close(dir);
+    return 0;
+}
+
+uint32_t apps_signature(void) {
+    uint32_t h = 2166136261u;
+    path_dirs(sign_one, &h);
+    return h;
 }
 
 typedef struct {
@@ -177,19 +209,10 @@ static int find_one(const char *dir, void *arg) {
     return 1;
 }
 
-// a bare name is looked for in APPS_DIR, then in each folder on the data partition
+// a bare name is looked for along $PATH like the shell does
 static int app_find(const char *name, char path[APP_PATH_MAX]) {
-    if (path_join(path, APPS_DIR, name) != 0)
-        return -1;
-
-    int fd = _open(path, O_RDONLY);
-    if (fd >= 0) {
-        _close(fd);
-        return 0;
-    }
-
     find_t f = { name, path, 0 };
-    data_dirs(find_one, &f);
+    path_dirs(find_one, &f);
     return f.found ? 0 : -1;
 }
 
